@@ -12,6 +12,41 @@
 #include "hb.h"
 #include "netloader.h"
 
+//extern unsigned time(time_t *);
+const char Platform[] = "3DS :D";
+
+
+extern void waitExit(void);
+
+void waitExit(void){
+  exit(0);
+}
+
+void Timer_start(uint32_t *increment){
+ // *increment = getSysTime();
+}
+
+float Timer_getTicks(uint32_t *increment){
+  /*u32 finalTime = getSysTime() - *increment;
+  return (finalTime * 49.667)/1000000;*/
+  return 0.0;
+}
+
+
+int getTime(char *array){
+  /*struct rtc time;
+  ds2_getTime(&time);
+  int i = 0;
+  array[i] = time.seconds;i++;
+  array[i] = time.minutes;i++;
+  array[i] = time.hours;i++;
+  array[i] = time.weekday;i++;
+  array[i] = time.day;i++;
+  array[i] = time.month;i++;
+  array[i] = time.year;*/
+  return 1;
+}
+
 bool brewMode = false;
 u8 sdmcCurrent = 0;
 u64 nextSdCheck = 0;

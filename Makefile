@@ -30,7 +30,7 @@ TARGET		:=	$(notdir $(CURDIR))
 BUILD		:=	build
 SOURCES		:=	source source/bagasami source/bagasami/core
 DATA		:=	data
-INCLUDES	:=	include include/bagasami/core
+INCLUDES	:=	include include/bagasami include/bagasami/core
 NO_SMDH		:=	1
 
 #---------------------------------------------------------------------------------
