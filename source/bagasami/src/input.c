@@ -27,10 +27,10 @@
      distribution.
 ---------------------------------------------------------------------------------*/
 
-#include "input.h"
+#include "../../core/input.h"
+
 
 #if defined(BASM_COMPILE_INPUT)
-
 bagAddrPtr *ASM_setStylusAddr(ASMSys *system, char *label){
   bagAddrPtr *data = NULL;
 
@@ -43,31 +43,31 @@ bagAddrPtr *ASM_setStylusAddr(ASMSys *system, char *label){
   return data;
 }
 
-
 /*===================================================================================
-*   DSTwo input detection
+*   DS input detection
 *
 *
 *
 ===================================================================================*/
-//from libBAG
-extern unsigned short _BAG_ExPad;
 extern void _equalityJump(ASMSys *system);
 
+static unsigned int _BAG_ExPad = 0;
+
 static void ASM_getKey(ASMSys *system){
-  //if running as script, user can't force control updates
-  if(!system->settings.passive)
-      BAG_UpdateIN();
+	_BAG_ExPad = *system->input.pad;
+	//update pad, in passive mode, user can't force key updates
+	if(!system->settings.passive)
+		scanKeys();
 
-  (*system->input.pad) = Pad.key;
+	*system->input.pad = keysCurrent();
 
-  if(*system->input.pad & KEY_TOUCH){
-  	system->cpu.reg[STYX_REG] = Stylus.X;
-  	system->cpu.reg[STYY_REG] = Stylus.Y;
-      //printf("Stylys: %d,%d\n", system->cpu.reg[STYX_REG], system->cpu.reg[STYY_REG]);
-  }
-
-  return;
+  	if(*system->input.pad & KEY_TOUCH){
+  		//update touch pad
+  		touchPosition touch;
+  		touchRead(&touch);
+  	 	system->cpu.reg[STYX_REG] = touch.px;
+  		system->cpu.reg[STYY_REG] = touch.py;
+  	}
 }
 
 static void chkkey(ASMSys *system){
@@ -108,7 +108,6 @@ static void getkey(ASMSys *system){
     return;
 }
 
-
 static void asm_initInputOps(ASMSys *system){
   system->global->inputOpInit++;
   if(system->global->inputOpInit > 1) return;
@@ -121,14 +120,13 @@ static void asm_initInputOps(ASMSys *system){
 }
 
 void ASM_initInput(ASMSys *system){
-  asm_initInputOps(system);
+	asm_initInputOps(system);
 
-  system->input.x = (bagAddrPtr*)&system->cpu.reg[STYX_REG];
-  system->input.y = (bagAddrPtr*)&system->cpu.reg[STYY_REG];
-  system->cpu.reg[PAD_REG] = 0;
-  system->input.pad = (bagAddrPtr*)&system->cpu.reg[PAD_REG];
-  return;
-  //&Pad.key;
+	system->input.x = (BASM_ADDRESS_TYPE*)&system->cpu.reg[STYX_REG];
+	system->input.y = (BASM_ADDRESS_TYPE*)&system->cpu.reg[STYY_REG];
+	system->cpu.reg[PAD_REG] = 0;
+	system->input.pad = (BASM_ADDRESS_TYPE*)&system->cpu.reg[PAD_REG];
+	return
 }
 
 
