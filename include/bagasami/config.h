@@ -42,6 +42,7 @@ extern "C" {
 #include <unistd.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <3ds.h>
 #include "filepath.h"
 
 
@@ -57,7 +58,7 @@ extern "C" {
 //#define BASM_COMPILE_VIDEO
 //#define BASM_COMPILE_ADVANCED_VIDEO
 //#define BASM_COMPILE_FAT
-//#define BASM_COMPILE_INPUT
+#define BASM_COMPILE_INPUT
 #define BASM_ALLOW_LOOPS
 //#define BASM_ALLOW_SPRITES
 //#define BASM_ALLOW_BACKGROUNDS
