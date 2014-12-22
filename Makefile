@@ -28,9 +28,9 @@ include $(DEVKITARM)/3ds_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	$(notdir $(CURDIR))
 BUILD		:=	build
-SOURCES		:=	source
+SOURCES		:=	source source/bagasami source/bagasami/core
 DATA		:=	data
-INCLUDES	:=	include
+INCLUDES	:=	include include/bagasami/core
 NO_SMDH		:=	1
 
 #---------------------------------------------------------------------------------
@@ -38,11 +38,11 @@ NO_SMDH		:=	1
 #---------------------------------------------------------------------------------
 ARCH	:=	-march=armv6k -mtune=mpcore -mfloat-abi=softfp
 
-CFLAGS	:=	-g -Wall -O2 -mword-relocations \
+CFLAGS	:=	-std=gnu99 -g -Wall -O2 -mword-relocations \
 			-fomit-frame-pointer -ffast-math \
 			$(ARCH)
 
-CFLAGS	+=	$(INCLUDE) -DARM11 -D_3DS
+CFLAGS	+=	$(INCLUDE) -DARM11 -D_3DS -DCONFIG_FILE="<config.h>"
 
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 
