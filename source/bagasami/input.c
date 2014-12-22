@@ -59,7 +59,7 @@ static void ASM_getKey(ASMSys *system){
   if(!system->settings.passive)
     scanKeys();
 
-  *system->input.pad = keysCurrent();
+  *system->input.pad = keysDown();
 
     if(*system->input.pad & KEY_TOUCH){
       //update touch pad
@@ -122,10 +122,10 @@ static void asm_initInputOps(ASMSys *system){
 void ASM_initInput(ASMSys *system){
   asm_initInputOps(system);
 
-  system->input.x = (BASM_ADDRESS_TYPE*)&system->cpu.reg[STYX_REG];
-  system->input.y = (BASM_ADDRESS_TYPE*)&system->cpu.reg[STYY_REG];
+  system->input.x = (bagAddrPtr*)&system->cpu.reg[STYX_REG];
+  system->input.y = (bagAddrPtr*)&system->cpu.reg[STYY_REG];
   system->cpu.reg[PAD_REG] = 0;
-  system->input.pad = (BASM_ADDRESS_TYPE*)&system->cpu.reg[PAD_REG];
+  system->input.pad = (bagAddrPtr*)&system->cpu.reg[PAD_REG];
   return;
 }
 
