@@ -3,3 +3,4 @@ build/
 *.exe
 *.elf
 *~
+*.DS_Store
