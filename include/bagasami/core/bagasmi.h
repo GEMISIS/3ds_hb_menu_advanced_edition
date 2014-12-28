@@ -41,6 +41,11 @@ extern "C" {
 
 #include CONFIG_FILE
 
+
+#define ASCII_CODE_ZERO 48
+#define ASCII_CODE_NINE 57
+
+
 //=============================
 //Variable types
 //=============================
@@ -159,32 +164,15 @@ typedef bagShort bagOpInt;
     #define WRITE_16BIT(mem, val) \
         memcpy(mem, &(val), sizeof(int16_t));
 
-   /* #define WRITE_16BIT(mem, val) {\
-            bagUShort newVal = (bagUShort)val; \
-            bagMemInt *p = (bagMemInt*)&newVal; \
-            mem[0] = p[0]; \
-            mem[1] = p[1];  \
-            }
-*/
-    /*#define WRITE_32BIT(mem, val) {\
-        bagUWord newVal = val; \
-        bagMemInt *p = (bagMemInt*)&newVal; \
-        mem[0] = p[0]; \
-        mem[1] = p[1]; \
-        mem[2] = p[2]; \
-        mem[3] = p[3]; \
-        }
-     */
+
     #define WRITE_32BIT(mem, val) \
         memcpy(mem, &(val), sizeof(int32_t));
-
 
     #if defined(USE_64BIT)
         #define WRITE_64BIT(mem, val) \
             memcpy(mem, &(val), sizeof(int64_t));
-
-
     #endif
+
 #elif defined(CPU_BIG_ENDIAN)
     //read values from bytes
    /* #define READ_8BIT(mem) ((bagWord)(*mem))
@@ -209,6 +197,20 @@ typedef bagShort bagOpInt;
         (*mem) = p[1];mem++; \
         (*mem) = p[0]; \
     }*/
+#endif
+
+
+
+#if defined(USE_64BIT)
+    #define storeAddress(value, buf) WRITE_64BIT((bagUByte*)(buf), (value))
+#else
+    #define storeAddress(value, buf) WRITE_32BIT((bagUByte*)(buf), (value))
+#endif
+
+#if defined(USE_64BIT)
+    #define readAddress(buf) (bagAddrPtr) READ_64BIT((buf))
+#else
+    #define readAddress(buf) (bagAddrPtr) READ_32BIT((buf))
 #endif
 
 //=============================
@@ -426,11 +428,6 @@ typedef enum {
     #define ARG_V "ARGV"
 #endif
 
-//Get program root directory
-#ifndef INFO_LABEL
-#define INFO_LABEL "_INFO"
-#define INFO_ROOT "_INFO_ROOTDIR"
-#endif
 
 //=============================
 /*
@@ -443,15 +440,18 @@ typedef enum {
     #define BASM_MAX_OPS 512
 #endif
 
-//4 kilobytes of memory reserved for default memory size
-#ifndef BASM_MEMSIZE
-    #define BASM_MEMSIZE (1024*sizeof(bagUDWord))
-#endif
 
 //set up memory to use for stack (default 64 words)
 #ifndef BASM_STACKSIZE
     #define BASM_STACKSIZE ( 2048 * sizeof(bagUDWord))
 #endif
+
+
+//4 kilobytes of memory reserved for default memory size
+#ifndef BASM_MEMSIZE
+    #define BASM_MEMSIZE (BASM_STACKSIZE + (1024*sizeof(bagUDWord)))
+#endif
+
 
 #ifdef BASM_MEMMAPPED_IO
     #ifndef BASM_MEMIO_SIZE
@@ -475,6 +475,14 @@ typedef enum {
 #ifndef BASM_MAX_ARGS
     #define BASM_MAX_ARGS 12
 #endif
+
+//used for determining how big of a string
+//should be used to hold an integer.
+//32 probably over kill, but can be easily changed.
+#ifndef BASM_MAX_INT_DIGITS
+    #define BASM_MAX_INT_DIGITS 32
+ #endif
+
 
 #if defined(BASM_ALLOW_LOOPS)
     #ifndef BASM_LOOP_DEPTHS
@@ -627,7 +635,7 @@ typedef struct ASMCpu{
 
 //systems virtual memory
 typedef struct ASMMemory{
-    bagUDWord pos;//end position of used memory
+    bagUDWord pos;//end position of used memory from *start
     bagAddrPtr *posReg;//register for ram end position
 
     #if defined(BASM_USE_STACK_MEM)
@@ -636,10 +644,9 @@ typedef struct ASMMemory{
         bagMemInt *byte;//ram
     #endif
 
-    //stack memory
-#ifdef BASM_ENABLE_STACK
-    bagMemInt stack[BASM_STACKSIZE];
-#endif
+
+    bagMemInt *start; //start position of user accessible ram
+
 
 #ifdef BASM_MEMMAPPED_IO
     bagMemInt *memio[BASM_MEMIO_SIZE];
@@ -701,6 +708,8 @@ typedef struct ASMGlobal_s{
     //checks if operations have been initiated
     bagByte stdOpInit, vidOpInit, inputOpInit, extLibInit;
 }ASMGlobal;
+
+//global data for all virtual machines created
 static ASMGlobal ASM_Globals;
 
 
@@ -833,16 +842,25 @@ extern int ASM_BuildFile(ASMSys *system, FilePath *file);
 //Stops and clears all data used by the interpreter
 extern void ASM_CleanSystem(ASMSys *system);
 
-//execute a line of code given by "input"
-int ASM_ExecuteLine(ASMSys *system, char *input, int *pushLines, int *pushDepth);
+
 
 
 //=================================
 //Functions used among the codebase
 //=================================
+
 //a quick function for initializing, loading, and running a file
 //exits when the asm program ends
-extern int ASM_run(ASMSys *system, FilePath *file);
+#ifndef USE_SCRIPT_STACK
+    extern int ASM_run(ASMSys *system, FilePath *file);
+
+#if defined(BASM_ENABLE_REPL)
+//execute a line of code given by "input"
+    int ASM_ExecuteLine(ASMSys *system, char *input, int *pushLines, int *pushDepth);
+#endif
+
+#endif
+
 
 //used for initializing new operations
 extern void ASM_setCpuOpsEx(ASMGlobal *global, const char *name, char params, void (*function)(ASMSys *system));
@@ -855,9 +873,7 @@ extern void errorMsg(ASMSys *system, bagDWord line, const char *msg, ...);
 extern void printFunction(ASMSys *system, const char *text, ...);
 
 //localize a path to the interpreters loaded binary directory
-//extern void AddRootPath(const ASMSys *system, const char *filepath, char *outPath, int outLen);
 extern FilePath *BASM_CheckPathLocality(ASMSys *system, const char *inPath);
-//void BASM_CheckPathLocality(ASMSys *system, const char *inPath, char *newPath, size_t newLen);
 
 //Set a funciton to deprecated status
 extern void SetDeprecated(const char *name);

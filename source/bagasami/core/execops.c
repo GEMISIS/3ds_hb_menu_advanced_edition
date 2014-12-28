@@ -31,8 +31,6 @@
 
 //from bagasmi.c
 extern void setCpuOps(ASMGlobal *global, const char *name, bagWord opVal);
-extern void ASM_setCpuOpsEx(ASMGlobal *global, const char *name, char params, void (*function)(ASMSys *system));
-extern bagAddrPtr readAddress(unsigned char *buf);
 
 
 //Ring buffers used in JUMP statements
@@ -201,7 +199,7 @@ static void clear(ASMSys *system){
 static void getARGV(ASMSys *system){
     bagDWord arg = *system->cpu.arg[1];
     if(arg < system->passed_args.argc){
-        bagMemInt * mem = &system->memory.byte[arg * sizeof(bagAddrPtr)];
+        bagMemInt * mem = &system->memory.start[arg * sizeof(bagAddrPtr)];
         strcpy((char*)system->cpu.arg[0], (char*)readAddress(mem));
         system->cpu.curVal = 1;
     }

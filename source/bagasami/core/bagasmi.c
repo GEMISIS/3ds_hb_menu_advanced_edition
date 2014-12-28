@@ -28,7 +28,7 @@
 ---------------------------------------------------------------------------------*/
 
 #include "bagasmi.h"
-
+#include "asmdata.h"
 /*===================================================================================
 *   Video functions if available
 *
@@ -72,9 +72,6 @@
 *
 ===================================================================================*/
 volatile bagUWord ASM_MEMUSED = 0;
-//buffers to relieve stack space
-//these are kind of a mess, definitely need to be renamed/moved/fixed at some point or other
-static char ASM_LineBuf[BASM_STRLEN];
 
 //name of platform running on
 extern const char Platform[256];
@@ -162,12 +159,6 @@ static void check_Deprecated(ASMSys *system, const char *name){
     for(int i = 0; i < deprecatedCount; i++){
         size_t length = strlen(deprecatedList[i]);
 
-
-        //if(deprecatedList[i][length] == '*' || deprecatedList[i][length-1] == '*')
-        //    length--;
-        //else
-        //    length = BASM_LABELLEN;
-
         if(!strncasecmp(name, deprecatedList[i], length)){
             printFunction(system, "%s is deprecated.\n", name);
             break;
@@ -182,6 +173,17 @@ static void check_Deprecated(ASMSys *system, const char *name){
 *
 *
 ===================================================================================*/
+
+#ifdef DBGTEXT
+	#define VM_MSG(msg, ...) \
+		if(system->settings.debugTxt) { \
+			printFunction(system, msg, ## __VA_ARGS__); \
+		}
+#else
+	#define VM_MSG(msg, ...)
+#endif
+
+
 //static char __dbg_print_buf[512];
 void printFunction(ASMSys *system, const char *text, ...){
     if(!system) {
@@ -218,6 +220,8 @@ void PrintBanner(ASMSys *system, const char *platformName){
 }
 //For error messages that output the line where an error occurs
 #if defined(OUTPUT_LINES_FILE)
+static char ASM_LineBuf[BASM_STRLEN];
+
 
 static void lineDumpPath(const char *root, char *outBuf, size_t outLen){
     char endStr[] = "_lines.txt";
@@ -309,13 +313,12 @@ void errorMsg(ASMSys *system, bagDWord lineNum, const char *msg, ...){
 	    //print out the line which caused the problem
 	    #if defined(OUTPUT_LINES_FILE)
 	        if(GET_FLAG(system->flags, ASM_DUMPLINES) && lineNum > -1) {
-	            char tempPath[MAX_PATH];
-	            if(!FilePath_Export(&system->prgmPath, tempPath, MAX_PATH)){
-	                BASM_DBGPRINT("Error creating program path\n");
-	            } else {
+	        	char *tempPath = FilePath_Str(&system->prgmPath);
+	        	if(tempPath) {
 	                FILE *lines = openLineDump(tempPath, "rb");
 	                sprintf(dbgOut, "First use in line:\n\"%s\"\n\n", _getLineDump(lines, lineNum));
 	                BASM_DBGPRINT("%s", dbgOut);
+	                FilePath_DelStr(&system->prgmPath);
 	            }
 	        }
 	    #endif
@@ -330,6 +333,34 @@ void errorMsg(ASMSys *system, bagDWord lineNum, const char *msg, ...){
 	system->cpu.exit = BASM_EXIT_ERROR;
     return;
 }
+
+
+#if defined(DUMP_OPS_LIST)
+//dumps the sorted list of operations the virtual machine has
+//for debugging purposes on matching op numbers to names
+static int exportOpsList(ASMSys *system){
+    FilePath *temp = FilePath_Init();
+    FilePath_Copy(temp, &system->rootPath);
+    FilePath_Add(temp, "opslog.txt");
+
+    char *filePath = FilePath_Str(temp);
+
+    printFunction(system, "Dumping ops list to:\n\t%s\n", filePath);
+    FILE *outfile = fopen(filePath, "wb");
+
+    if(!outfile){
+        printFunction(system, "Error outputting ops\n");
+        return 0;
+    }
+    for (int i = 0; i < system->global->opCount; i++)
+        fprintf(outfile, "%s (%d)\n", system->global->opLabels[i].label, system->global->opLabels[i].addr);
+    fclose(outfile);
+
+    //clean that up
+    FilePath_Destroy(temp);
+    return 1;
+}
+#endif
 
 
 /*===================================================================================
@@ -360,52 +391,6 @@ void errorMsg(ASMSys *system, bagDWord lineNum, const char *msg, ...){
 
 
 
-
-
-
-
-//clear and free all memory used by data storage
-static ASMData *allocateMoreData(ASMData *data, bagWord *count){
-
-    if(*count <= 0){
-        *count = 0;
-        data = NULL;
-    }
-
-    //we need to always allocate one more than necessary
-    bagWord oldSize = ((*count)) * sizeof(ASMData);(*count)++;
-    bagWord newSize = ((*count)) * sizeof(ASMData);
-
-    ASMData *tempdat = NULL;
-    asm_realloc(tempdat, data, newSize, oldSize);
-    if(!tempdat)
-        return NULL;
-
-    return tempdat;
-}
-
-static void cleanAllData(ASMData *data, bagWord *count){\
-    ASMData *lines = (ASMData *)(data);
-    bagWord total = (*count);
-
-    //make sure there is data first
-    if(!lines || total == 0)
-        return;
-
-    //clear all label names
-    for(int i = 0; i < total; i++){
-        if(lines[i].label){
-            asm_free(lines[i].label, sizeof(char), strlen((const char*)lines[i].label));
-        }
-
-        lines[i].label = NULL;
-        lines[i].addr = 0;
-    }
-
-    asm_free(lines, (*count), sizeof(ASMData));
-    *count = 0;
-    return;
-}
 
 
 /*===================================================================================
@@ -455,147 +440,7 @@ int ASMLine_Set(ASMLineInfo *curLine, const char *newData, int size){
 ===================================================================================*/
 #define DATA_END_OFFSET 1
 
-static inline void swap_internal(bagByte *a, bagByte *b, size_t size){
-    if (a == b)
-        return;
 
-    bagByte t;
-    while (size--){
-        t = *a;
-        *a++ = *b;
-        *b++ = t;
-    }
-    return;
-}
-
-static void qsort_internal(bagByte *begin, bagByte *end, size_t size, int(*compar)(const void *, const void *)){
-    if (end <= begin) return;
-
-    bagByte *pivot = begin;
-    bagByte *l = begin + size, *r = end;
-
-
-    while (l < r){
-        int result = compar(l, pivot);
-
-        if (result > 0){
-            l += size;
-            __builtin_prefetch(l);
-        }
-        else if(result < 0){
-            r -= size;
-            __builtin_prefetch(r);
-            swap_internal(l, r, size);
-        }
-        else
-            break;
-    }
-
-    l -= size;
-    swap_internal(begin, l, size);
-    qsort_internal(begin, l, size, compar);
-    qsort_internal(r, end, size, compar);
-    return;
-}
-
-static void _BAG_Qsort(void *data, size_t dataCount,
-                        size_t dataSize, int(*compar)(const void *, const void *)){
-
-    qsort_internal((bagByte *)data, data+dataCount*dataSize, dataSize, compar);
-    return;
-}
-
-
-static int compareSort(const void *dest, const void *src){
-    ASMData *destObj = (ASMData*)dest;
-    ASMData *srcObj = (ASMData*)src;
-
-    char *dest_str = (char*)destObj->label,
-         *src_str = (char*)srcObj->label;
-
-    return -BASM_strcmp(dest_str, src_str);
-}
-
-//case insensitive compare
-static int compareSortNoCase(const void *dest, const void *src){
-    ASMData *destObj = (ASMData*)dest;
-    ASMData *srcObj = (ASMData*)src;
-
-    char *dest_str = (char*)destObj->label,
-    *src_str = (char*)srcObj->label;
-
-    return -strcasecmp(dest_str, src_str);
-}
-
-//storing and retrieving variables declared
-static void asm_listSort(ASMData *data, bagWord count){
-    _BAG_Qsort((void*)data, count, sizeof(ASMData), &compareSort);
-
-#ifdef DEBUG_OUTPUT_LISTS
-    printf("\nSorted List\n");
-    for(int i = 0; i < count; i++)
-        printf("%s\n", data[i].label);
-#endif
-    return;
-}
-
-static void asm_listSortNoCase(ASMData *data, bagWord count){
-    _BAG_Qsort((void*)data, count, sizeof(ASMData), &compareSortNoCase);
-}
-
-static bagWord _BAG_binSearch(const void *data,  bagWord dataCount, bagWord dataSize, void *searchVal, int(*compare)(const void *, const void*)){
-    bagWord min = 0, max = dataCount - 1,
-             mid = 0, cmp = 0;
-
-    if(max < 0)
-        return -2;
-
-    do{
-        mid = (min + max) >> 1;
-        cmp = compare((void*)data + (mid * dataSize), searchVal);
-
-        if(cmp == 0)
-            return mid;
-        else if(cmp < 0)
-            min = mid + 1;
-        else if(cmp > 0)
-            max = mid - 1;
-
-    }while(min <= max);
-
-    return -1;
-}
-
-static int compareFind(const void *data, const void *cmpVal){
-    ASMData *destObj = (ASMData*)data;
-
-    char *dest_str = (char*)destObj->label,
-         *src_str = (char*)cmpVal;
-
-    //printf("%s vs. %s\n", dest_str, src_str);
-    return BASM_strcmp(dest_str, src_str);
-}
-
-static int compareFindNoCase(const void *data, const void *cmpVal){
-    ASMData *destObj = (ASMData*)data;
-
-    char *dest_str = (char*)destObj->label,
-    *src_str = (char*)cmpVal;
-
-    //printf("%s vs. %s\n", dest_str, src_str);
-    return strcasecmp(dest_str, src_str);
-}
-
-static bagWord asm_listGet(const ASMData *data, bagWord count, const char *label){
-    return _BAG_binSearch((void*)data,  count,
-                            sizeof(ASMData), (char*)label, &compareFind);
-}
-
-//Operations are not case sensitive anymore
-static bagWord asm_listGetNoCase(const ASMData *data, bagWord count, const char *label){
-    return _BAG_binSearch((void*)data,  count,
-                          sizeof(ASMData), (char*)label, &compareFindNoCase);
-}
 
 /*===================================================================================
 *   Address reading and writing for BAGASMI
@@ -603,34 +448,9 @@ static bagWord asm_listGetNoCase(const ASMData *data, bagWord count, const char 
 *
 *
 ===================================================================================*/
-//for reading and storing hardware locations when parsing / optimizing file
-static inline void storeAddress(bagAddrPtr value, bagUByte *buf){
-    switch(sizeof(bagAddrPtr)){
-        #if defined(USE_64BIT)
-            case 8:
-            WRITE_64BIT(buf, value);
-            break;
-        #endif
-        case 4:WRITE_32BIT(buf, value);break;
-        case 2:WRITE_16BIT(buf, value);break;
-        case 1:WRITE_8BIT(buf, value);break;
-    }
-    return;
-}
-bagAddrPtr readAddress(bagUByte *buf){
-    switch(sizeof(bagAddrPtr)){
-        #if defined(USE_64BIT)
-            case 8: return READ_64BIT(buf); break;
-        #endif
-        case 4: return READ_32BIT(buf);break;
-        case 2: return READ_16BIT(buf); break;
-        case 1: return READ_8BIT(buf); break;
-    }
-}
-
 //convert variables and hardware consts to their memory addresses
 //then store addresses in the virtual ram
-static int setAddr(bagAddrPtr *addr, bagByte *output){
+static inline int setAddr(bagAddrPtr *addr, bagByte *output){
     bagAddrPtr temp = (bagAddrPtr)addr;
     storeAddress(temp, (bagUByte*)output);
     output += sizeof(bagAddrPtr);
@@ -647,17 +467,17 @@ static int setAddr(bagAddrPtr *addr, bagByte *output){
 
 void setCpuOps(ASMGlobal *global, const char *name, bagDWord opVal){
     //old is system->opLabels
-    ASMData *temp = allocateMoreData(global->opLabels, &global->opCount);
+    ASMData *temp = ASMData_allocateMore(global->opLabels, &global->opCount);
     if(!temp){
         //errorMsg(system, -1, "Error allocating op labels");
-        printf("error initializing ops\n");
+        BASM_DBGPRINT("error initializing ops\n");
         return;
     }
     global->opLabels = temp;
 
     bagWord count = (global->opCount - DATA_END_OFFSET);
     if(count < 0){
-        printf("cpu ops negative\n");
+        BASM_DBGPRINT("cpu ops negative\n");
         count = 0;
     }
     //increase memory used
@@ -665,12 +485,10 @@ void setCpuOps(ASMGlobal *global, const char *name, bagDWord opVal){
     //if(len > BASM_LABELLEN) len = BASM_LABELLEN - 1;
     asm_calloc(global->opLabels[count].label, sizeof(char), len + 1);
     if(!global->opLabels[count].label){
-        printf("error initializing ops: 2\n");
+        BASM_DBGPRINT("error initializing ops: 2\n");
         return;
     }
-    memcpy(global->opLabels[count].label, name, len);
-    global->opLabels[count].label[len] = '\0';
-    //strncpy(global->opLabels[count].label, name, len);
+    strncpy(global->opLabels[count].label, name, len);
     global->opLabels[count].addr = opVal;
     //printf("Op %s added.\n", system->opLabels[count].label);
     return;
@@ -690,7 +508,7 @@ static void ASM_cleanCpuOps(ASMGlobal *global){
 
     //if no more standard ops have been initialized, then assume no more systems are running
     if(global->stdOpInit <= 0){
-        cleanAllData((ASMData*)global->opLabels, &global->opCount);
+        ASMData_cleanAll((ASMData*)global->opLabels, &global->opCount);
         global->vidOpInit = 0;
         global->inputOpInit = 0;
         global->stdOpInit = 0;
@@ -725,11 +543,8 @@ static void asmParseGetOp(ASMSys *system, ASMLineInfo *line){
     }
     system->cpu.arg[i] = NULL;
 
-    #if defined(DBGTEXT)
-        if(system->settings.debugTxt)
-            printFunction(system, "Got Op: %d, args: %d\n",
-                            system->cpu.curOp, line->args);
-    #endif
+    //prints only when debug text enabled
+    VM_MSG("Got Op: %d, args: %d\n", system->cpu.curOp, line->args)
 
     ++system->prgm.pos;
     return;
@@ -752,7 +567,7 @@ inline int ASM_Step(ASMSys *system){
 /*===================================================================================
 *   Memory Section
 *
-*
+*	Creating, Destroying, Reading and Writing the virtual machines main ram.
 *
 ===================================================================================*/
 static bagWord asmGetRamSize(ASMSys *system){
@@ -765,7 +580,7 @@ static void asmSetRamSize(ASMSys *system, bagWord size){
 }
 
 bagAddrPtr *asmGetRamAddr(ASMSys *system, long pos){
-    return (bagAddrPtr*)&system->memory.byte[pos];
+    return (bagAddrPtr*)&system->memory.start[pos];
     //return (bagAddrPtr*)system->memory.posReg + pos;
 }
 
@@ -782,8 +597,15 @@ static int asmInitRam(ASMSys *system){
         //memset(system->memory.byte, 0, system->settings.totalRam);
     #endif
 
+    #ifdef BASM_ENABLE_STACK
+        system->memory.start = system->memory.byte + BASM_STACKSIZE;
+    #else
+        system->memory.start = system->memory.byte;
+    #endif
+
+
     system->memory.pos = (system->settings.argCount*sizeof(bagAddrPtr));
-    system->memory.posReg = (bagAddrPtr*)system->memory.byte;
+    system->memory.posReg = (bagAddrPtr*)system->memory.start;
     //(bagAddrPtr*)&system->memory.pos;
 
     return 1;
@@ -796,6 +618,7 @@ static void asmCleanRam(ASMSys *system){
             asm_free(system->memory.byte, asmGetRamSize(system), sizeof(bagMemInt));
         }
         system->memory.byte = NULL;
+        system->memory.start = NULL
     #endif
     return;
 }
@@ -911,21 +734,8 @@ static bagDWord asm_dataSet(ASMSys *system, const char *label, bagDWord value,
 *   Scripts ARGV Protocol
 *   Passing string arguments to the script
 *
-*
+*	ToDo: Only supports passing strings in, need an easy way to convert integers to str
 ===================================================================================*/
-//Pushes args from temp ram to main ram, to be called once main ram is initialized
-static int asm_pushArgs(ASMSys *system){
-    //if args are stored in temporary ram, copy them to main ram
-    if(system->passed_args.argc > 0 && system->passed_args.tempram &&
-        system->passed_args.tempram != system->memory.byte){
-        memcpy(asmGetRamAddr(system, 0), system->passed_args.tempram, system->memory.pos);
-
-        asm_free(system->passed_args.tempram, system->passed_args.argc, sizeof(bagAddrPtr));
-        system->passed_args.tempram = NULL;
-    }
-    return 1;
-}
-
 //clean up memory used for allocating ARGV
 void ASM_ClearArgs(ASMSys *system){
     if(system->passed_args.argc <= 0 || !system->passed_args.argv)
@@ -960,7 +770,7 @@ void ASM_InitARGV(ASMSys *system, int argc, char *argv[]){
         system->passed_args.argv = argv;
         system->passed_args.argc = argc;
 
-        system->passed_args.tempram = system->memory.byte;
+        system->passed_args.tempram = system->memory.start;
         if(!system->passed_args.tempram)//if main ram isn't available, make temporary ram
             asm_calloc(system->passed_args.tempram, argc, sizeof(bagAddrPtr));
 
@@ -968,9 +778,10 @@ void ASM_InitARGV(ASMSys *system, int argc, char *argv[]){
             errorMsg(system, -1, "Error allocating arg ram\n");
             return;
         }
+        //Store argv addresses in temp ram location.
         bagMemInt *mem = system->passed_args.tempram;
         for(int i = 0; i < argc; i++){
-            storeAddress((bagAddrPtr)argv[i], (bagMemInt*)mem);
+            storeAddress(argv[i], (bagMemInt*)mem);
             mem += sizeof(bagAddrPtr);
         }
    }
@@ -1014,7 +825,19 @@ void ASM_SetArgs(ASMSys *system, int argc, ...){
     return;
 }
 
+//Pushes args from temp ram to main ram, to be called once main ram is initialized
+//the first argc * addrsize bytes of main ram hold the argv addresses
+static int asm_pushArgs(ASMSys *system){
+    //if args are stored in temporary ram, copy them to main ram
+    if(system->passed_args.argc > 0 && system->passed_args.tempram &&
+        system->passed_args.tempram != system->memory.start){
+        memcpy(asmGetRamAddr(system, 0), system->passed_args.tempram, system->memory.pos);
 
+        asm_free(system->passed_args.tempram, system->passed_args.argc, sizeof(bagAddrPtr));
+        system->passed_args.tempram = NULL;
+    }
+    return 1;
+}
 
 
 
@@ -1042,10 +865,11 @@ address locations for fast reading
 This will scan an argument at a time, with a string taking up a whole argument
 and assumes an arg divider is placed immediately after the end string marker
 */
-static int parseInLine(bagByte *line, bagByte *out, char escapeChar){
+static int parseInLine(bagByte *line, bagByte *out, size_t outSize, char escapeChar){
     register int len = 0, quoteCount = 0;
+    size_t curSize = 0;
     //start string
-    while((*line) != escapeChar && (*line) >= ' '){
+    while((*line) != escapeChar && (*line) >= ' ' && curSize < outSize){
         /*
         *check if the line contains a string
         *if there is a string, the function won't exit
@@ -1057,12 +881,18 @@ static int parseInLine(bagByte *line, bagByte *out, char escapeChar){
         }
         len++;//keep track of how much string we went through
         if(!quoteCount && *line == ' ') line++;
-        else (*out++) = (*line++);
+        else {
+        	(*out++) = (*line++);
+        	curSize++;
+        }
 
         //make sure that people can print out the escape character here if PARSE_CHARACTER operator
         //is in use
         bagByte *temp = line - 1;
-        if(*temp == PARSE_CHARACTER) (*out++) = (*line++);
+        if(*temp == PARSE_CHARACTER) {
+        	(*out++) = (*line++);
+        	curSize++;
+        }
 
     }
     //take into account end quote for argument size
@@ -1071,16 +901,15 @@ static int parseInLine(bagByte *line, bagByte *out, char escapeChar){
     //detect the end of the string
     else if(quoteCount >= 1 && *line == PARSE_STRING) len++;
 
+    if(curSize >= outSize) {
+    	BASM_DBGPRINT("Error parsing argument, outbuffer not large enough!\nline: %s\n", line);
+    }
+
     return len;
 }
 
 //Check if a given variable arguement contains an array offset ->[ ]
 static bagWord checkIsArray(const char *label){
-    /*char tempLabel[MAX_PATH];
-    strncpy(tempLabel, label, MAX_PATH);
-    char *result = strchr(tempLabel, PARSE_ARRAY_OFFSET);
-    if(result) return (bagWord)(result - tempLabel);
-    else return (bagWord)strlen(label);*/
     char *result = strchr(label, PARSE_ARRAY_OFFSET);
     if(result) return (bagWord)(result - label);
 
@@ -1088,6 +917,8 @@ static bagWord checkIsArray(const char *label){
 }
 
 //Parse the array offset of a given variable
+//input is a label value something[x]
+//and return value is x as an integer
 static bagWord parseArrayOffset(char *input){
     char tempLabel[MAX_PATH];
     strncpy(tempLabel, input, MAX_PATH);
@@ -1096,7 +927,7 @@ static bagWord parseArrayOffset(char *input){
     char *end = strchr(tempLabel, PARSE_ARRAY_OFFSET_END);
     if(start && end){
         start++;
-        char posBuf[32];
+        char posBuf[BASM_MAX_INT_DIGITS];
         char *ptr = &posBuf[0];
         while(start < end){
             *ptr = *start;
@@ -1115,22 +946,8 @@ static bagWord parseArrayOffset(char *input){
 *   Convert labels into addresses for various systems
 *
 ===================================================================================*/
-
-//set the addresses for misc requested info
-bagAddrPtr *ASM_setInfoAddr(ASMSys *system, char *label){
-    bagAddrPtr *data = NULL;
-
-    if(!strncmp(label, INFO_ROOT, strlen(INFO_ROOT))){
-        //label += strlen(INFO_ROOT);
-
-        FilePath_Export(&system->rootPath, ASM_LineBuf, BASM_STRLEN);
-        data = (bagAddrPtr*)&ASM_LineBuf[0];
-    }
-
-    return data;
-}
-
-static int setRegAddrEx(ASMSys *system, int regNum, bagByte *output, bagByte deref){
+//write address of register to specified output
+static int setRegAddrEx(ASMSys *system, int regNum, bagByte *output){
     if(regNum == REG_SP) {
         bagAddrPtr **sp = (bagAddrPtr**)&system->cpu.reg[regNum];
         setAddr(*sp, output);
@@ -1141,7 +958,7 @@ static int setRegAddrEx(ASMSys *system, int regNum, bagByte *output, bagByte der
 }
 
 //set the address for a register
-static int setRegAddr(ASMSys *system, char *label, bagByte *output, bagByte deref){
+static int setRegAddr(ASMSys *system, char *label, bagByte *output){
     //regName, regNumber
     //zero,    0
     //t0-t9,   1-10
@@ -1196,36 +1013,44 @@ static int setRegAddr(ASMSys *system, char *label, bagByte *output, bagByte dere
 
 
     //consume the PARSE_DEREF_END character
-    return setRegAddrEx(system, regNum, output, deref);
+    return setRegAddrEx(system, regNum, output);
 }
 
 //set address for constant values
 //Constant values that are used more than once can be optimized so only
 //a single instance of it remains in memory. Otherwise more ram is used for each constant.
 //A constant can be a text string "Like This" or numbers.
+
+//this particular function handles numerical constants
 static int setConstantAddr(ASMSys *system, const char *label, bagByte *output){
 
     #if defined(OPTIMIZE_CONSTANT_STORAGE)
+		//constant values can be stored like variables for faster lookup.
+		//Unfortunately, this means someone could redefine a numberical value to something else
+		//such as set 1, #2 or something stupid like that.
+		//oh well...
 
-        bagWord index = asm_listGet(system->data, system->dataCount, label);
+		//so first find if the constant has ben stored before
+        bagWord index = ASMData_listGet(system->data, system->dataCount, label);
         if(index < 0){
-            ASMData *temp = allocateMoreData(system->data, &system->dataCount);
+            ASMData *temp = ASMData_allocateMore(system->data, &system->dataCount);
             if(!temp){
                 errorMsg(system, -1, "Error allocating const value: \"%s\"\n", label);
                 return 0;
             }
             system->data = temp;
-            //this constant has yet to be stored;
+            //this constant has yet to be stored, store it
             if(asm_dataSet(system, label, (bagDWord)stringToNumber(label), &asm_storeWord)<0)
                 return 0;
 
-            asm_listSort(system->data, system->dataCount);
-            if((index = asm_listGet(system->data, system->dataCount, label)) < 0){
+            //resort the list so its all good
+            ASMData_sort(system->data, system->dataCount);
+            if((index = ASMData_listGet(system->data, system->dataCount, label)) < 0){
                 errorMsg(system, -1, "Failed storing const: \"%s\"\n", label);
                 return 0;
             }
         }
-
+        //get the address of the stored constant, and write it to output
         bagAddrPtr *mem = (bagAddrPtr*)asmGetRamAddr(system, system->data[index].addr);
         return setAddr((bagAddrPtr*)mem, output);
 
@@ -1274,8 +1099,6 @@ static int setStringConstantAddr(ASMSys *system, char *label, bagByte *output, s
 
     bagAddrPtr *mem = (bagAddrPtr*)asmGetRamAddr(system, system->memory.pos);
     strncpy((char*)&mem[0], label, sizeof(bagAddrPtr) * (length-1));
-    //memcpy(&mem[0], label, sizeof(char) * (length-1));
-    //mem[length] = '\0';
     system->memory.pos += length;
     //make sure every string is stored in a size that is a power of 4
     BASM_MEM_ALIGN(system->memory.pos);
@@ -1284,14 +1107,22 @@ static int setStringConstantAddr(ASMSys *system, char *label, bagByte *output, s
 
 //store address for variables that have been declared
 static int setVariableAddr(ASMSys *system, char *label, bagByte *output, bagDWord lineNum){
-    char tempName[BASM_LABELLEN];
+	//first, if the label is an array, make sure we only
+	//get the array name and not the offset
+	size_t labelLen = strlen(label) + 1;
+    char tempName[labelLen];
+
     bagWord copyLen = checkIsArray(label);
-    if(copyLen > BASM_LABELLEN) copyLen = BASM_LABELLEN-1;
-    //printf("label:%s - copylen = %d - oldLen: %d\n", label, copyLen, strlen(label));
+    if(copyLen > labelLen) {
+    	errorMsg(system, lineNum,"Internal error getting name of array: %s @ line: %d", label, lineNum);
+    	return 0;
+    }
+
     memcpy(tempName, label, sizeof(char) * copyLen);
     tempName[copyLen] = '\0';
 
-    bagWord index = asm_listGet(system->data, system->dataCount, tempName);
+    //once we have the array name, get its address
+    bagWord index = ASMData_listGet(system->data, system->dataCount, tempName);
     if(index < 0){
         errorMsg(system, lineNum,"No such label declared: \"%s\" -line:%d\n", tempName, lineNum);
         return 0;
@@ -1302,6 +1133,9 @@ static int setVariableAddr(ASMSys *system, char *label, bagByte *output, bagDWor
     }
     bagAddrPtr *mem = (bagAddrPtr*)asmGetRamAddr(system, system->data[index].addr);
 
+    //if the label contains an array offset, that is, the label itself will contain
+    //more characters than just its name "array[x]" vs "array". Then we need
+    //to parse the offset, and add it to the address
     if(strlen(label) > copyLen){
         label+=copyLen;
         bagWord offset = parseArrayOffset(label);
@@ -1312,14 +1146,15 @@ static int setVariableAddr(ASMSys *system, char *label, bagByte *output, bagDWor
 
         mem = (bagAddrPtr*)asmGetRamAddr(system, system->data[index].addr + offset);
     }
+    //and finally return the calculated address
     return setAddr((bagAddrPtr*)mem, output);
 }
 
 
 //Store addresses of jump locations
 static int setJumpAddr(ASMSys *system, char *label, bagByte *output, bagDWord lineNum){
-    bagWord test = asm_listGet(system->jumps, system->jumpCount, label);
-    if(test < 0) return 0; //jump doesn't exist
+    bagWord test = ASMData_listGet(system->jumps, system->jumpCount, label);
+    if(test < 0) return 0; //jump label doesn't exist
 
     //fast jumps convert the number to a packed integer on the virtual ram
     //this removes the need for an atoi call in the processing loop later on
@@ -1340,6 +1175,7 @@ static int setJumpAddr(ASMSys *system, char *label, bagByte *output, bagDWord li
 *
 ===================================================================================*/
 
+//essentially converts an input of ['<', '\', 'n' ] to "'10" (byte sigil with new line ascii code)
 static void characterToAscii(char *buffer){
     char tempBuf[6];//should only need 4 characters max
 
@@ -1359,26 +1195,35 @@ static void characterToAscii(char *buffer){
             case 'r': *buf = '\r'; break;
         }
     }
-
+    //copy the parse byte sigil and then the character to output to tempbuf
     sprintf(tempBuf, "%c%d", PARSE_BYTE, (int)*buf);
+    //and finally, copy that to the buffer for output
     strncpy(buffer, tempBuf, 6);
     return;
 }
 
 
 //Converts all arguments in a line to its proper addresses
-static int varhwToAddr(ASMSys *system, ASMLineInfo *prgmLine, bagDWord lineNum, bagByte *outBuf, int outBufSize){
+static int varhwToAddr(ASMSys *system, ASMLineInfo *prgmLine, bagDWord lineNum){
+    //outbuffer will hold a fully compiled line which has a limited size
+    bagByte outBuf[BASM_MAX_ASMLINE_SIZE];
+    //copy instruction number to line buffer
+    memcpy(outBuf, prgmLine->str, sizeof(char) * BASM_INSTRUCT_SIZE);
 
-    bagByte *out = (outBuf + BASM_INSTRUCT_SIZE),
-            *linePos = (prgmLine->str + BASM_INSTRUCT_SIZE);
+    bagByte *out 		= (outBuf + BASM_INSTRUCT_SIZE),
+            *linePos 	= (prgmLine->str + BASM_INSTRUCT_SIZE);
+
+    //label buffer holds text representation of argument
     char labelBuf[BASM_STRLEN];
     int arg = 0, totalLen = 0, exitFlag = 0, finalLen = 0;
     bagOpInt argDeref = 0;
 
+
+    //loop through every argument on a line to convert it to its proper address
     for(arg = 0; arg < BASM_MAX_ARGS; arg++){
 
         //grab argument from line, argument label length is returned
-        int argLen = parseInLine(linePos + totalLen, (bagByte*)labelBuf, PARSE_ARGDIVIDER);
+        int argLen = parseInLine(linePos + totalLen, (bagByte*)labelBuf, BASM_STRLEN, PARSE_ARGDIVIDER);
         //printf("curArg: %s\n", labelBuf);
         if(argLen <= 0) break;
 
@@ -1397,31 +1242,29 @@ static int varhwToAddr(ASMSys *system, ASMLineInfo *prgmLine, bagDWord lineNum, 
             //if it is, we need to exit after processing it
             exitFlag++;
         }
-
-        //if value is not a variable address then copy it to the line and check again
+        //Print out a warning for use of deprecated registers and stuff
+        //if necessary
         check_Deprecated(system, (char*)labelBuf);
 
-        //convert ascii characters to ascii numbers
+        //convert ascii characters to their ascii number code
         characterToAscii((char*)labelBuf);
 
+        //check if argument needs to be dereferenced
         bagByte deref = 0;
         if(labelBuf[0] == PARSE_DEREF_START){
             deref++;
-            argDeref |= (1<< (arg));
+            argDeref |= (1 << (arg));
         }
 
         //make sure we have room in our output buffer
-        if(finalLen > outBufSize){
+        if(finalLen > BASM_MAX_ASMLINE_SIZE){
             system->cpu.exit = BASM_EXIT_ERROR;
             return 0;
         }
         else if(labelBuf[deref] == PARSE_HARDWARE){
             //hardware location addresses
             bagByte *label = (bagByte*)&labelBuf[deref]; label++;
-            finalLen += setRegAddr(system, (char*)label, &out[finalLen], deref);
-
-            //bagAddrPtr *infoData = ASM_setInfoAddr(system, label);
-            //if(infoData) finalLen += setAddr(infoData, &out[finalLen]);
+            finalLen += setRegAddr(system, (char*)label, &out[finalLen]);
 
             #if defined(BASM_COMPILE_VIDEO)
                 bagAddrPtr *vidData = ASM_setVideoAddr(system, (char*)label);
@@ -1437,21 +1280,23 @@ static int varhwToAddr(ASMSys *system, ASMLineInfo *prgmLine, bagDWord lineNum, 
         else if(labelBuf[0] == PARSE_WORD || labelBuf[0] == PARSE_SHORT || labelBuf[0] == PARSE_BYTE)
             finalLen += setConstantAddr(system, &labelBuf[1], &out[finalLen]);
 
-        //strings and jumps not converted
+        //strings will be copied to the main ram, and their address will stored here instead
         else if(labelBuf[deref] == PARSE_STRING){
             finalLen += setStringConstantAddr(system, &labelBuf[1], &out[finalLen], argLen);
         }
         else{//convert variable to address
-            //check for a number
-            if(labelBuf[0] >= 48 && labelBuf[0] <= 57){
+            //check for a number, if number is missing its sigil to determine if its a word, short or byte
+            if(labelBuf[0] >= ASCII_CODE_ZERO && labelBuf[0] <= ASCII_CODE_NINE){
                 finalLen += setConstantAddr(system, labelBuf, &out[finalLen]);
             } else {
+            	//otherwise, check if its a jump
                 int test = setJumpAddr(system, labelBuf, &out[finalLen], lineNum);
+                //if not, then it has to be a variable
                 if(!test) finalLen += setVariableAddr(system, labelBuf, &out[finalLen], lineNum);
+                //otherwise, something is wrong
                 else if(test > 0) finalLen += test;
             }
         }
-
 
         //exit on errors
         if(system->cpu.exit) return 0;
@@ -1468,9 +1313,55 @@ static int varhwToAddr(ASMSys *system, ASMLineInfo *prgmLine, bagDWord lineNum, 
     //append dereferenced args to the op number
     bagShort *derefBits = (bagShort*)(prgmLine->str + BASM_OPNUM_SIZE);
     *derefBits = argDeref;
-    //    (*(prgmLine->str + BASM_OPNUM_SIZE)) = argDeref;
+    //and this line should be done
     return 1;
 }
+
+
+/*===================================================================================
+*   Collection and storing phase
+*
+*	These functions are called on the first scan through of the asm file
+*	to store variable and jump declarations in the main memory and their sorted
+*	lists to be searched for upon address conversion
+*
+*   Also contains the step of converting operations such as jump, add, etc
+*   to their numerical value for easy parsing and storage in future optimization
+*   steps
+===================================================================================*/
+
+
+//Determines if a label name contains any invalid characters or not
+//returns 0 if the label is fine,
+//returns > 0 if label contains invalid characters
+static char checkValidLabel(const char *label) {
+	//if starts with an number
+	if(*label >= ASCII_CODE_ZERO && *label <= ASCII_CODE_NINE) return 1;
+	else {
+		//check that label doesn't contain any ( or )
+		char *tmp = strchr(label, PARSE_DEREF_START);
+		if(tmp) return 2;
+
+		tmp = strchr(label, PARSE_DEREF_END);
+		if(tmp) return 2;
+
+		const char *symbols = "()+;'\"#*,@$+-=!%^?/`~\\|{}";
+		//make sure it doesn't contain any weird symbols
+		tmp = strpbrk(label, symbols);
+		if(tmp) {
+			//finish going through those symbols
+			//while((tmp =strpbrk(NULL, symbols)));
+			return 3;
+		}
+
+		//no funny characters found in tmp
+		return 0;
+	}
+
+	return 0; //all clear
+}
+
+
 
 /*
 *   This function parses a line for a DATA declaration.
@@ -1482,13 +1373,15 @@ static int varhwToAddr(ASMSys *system, ASMLineInfo *prgmLine, bagDWord lineNum, 
 */
 
 
-//ToDo:Fix so that jump labels can exist on lines without trailing instruction
-//If no trailing instruction exists, need to remove line
 //store jump points in a list for use when compiling code on load
 static void storeJumpPoint(ASMSys *system, const char *dataLabel, ASMLineInfo *currentLine, bagDWord lineNum){
+	if(checkValidLabel(dataLabel)){
+		errorMsg(system, lineNum, "Label contains invalid characters: \"%s\"\n", dataLabel);
+		return;
+	}
 
     //resize jump list to accomadate the new jump
-    ASMData *temp = allocateMoreData(system->jumps, &system->jumpCount);
+    ASMData *temp = ASMData_allocateMore(system->jumps, &system->jumpCount);
     if(!temp){
         errorMsg(system, lineNum, "Error storing jump: \"%s\"\n", dataLabel);
         return;
@@ -1496,7 +1389,7 @@ static void storeJumpPoint(ASMSys *system, const char *dataLabel, ASMLineInfo *c
     system->jumps = temp;
     int count = system->jumpCount - DATA_END_OFFSET;
     if(count < 0){
-        printf("jump count negative\n");
+        BASM_DBGPRINT("jump count negative\n");
         count = 0;
     }
 
@@ -1530,13 +1423,17 @@ static void storeJumpPoint(ASMSys *system, const char *dataLabel, ASMLineInfo *c
         //copy line excluding label and spaces
         char *start = (char*)&currentLine->str[len];
         size_t newLen = currentLine->len - len;
-        strncpy(ASM_LineBuf, start, newLen);
 
-        //resize the line
-        if(ASMLine_Set(currentLine, ASM_LineBuf, (bagWord)newLen)){//negative size to force a strcpy
+        char *tmpBuf = calloc(sizeof(char), newLen + 1);
+        if(!tmpBuf) {
             errorMsg(system, lineNum, "Error allocating jump: \"%s\"\n", dataLabel);
             return;
         }
+        //update current line string
+        strncpy(tmpBuf, start, newLen);
+        asm_free(currentLine->str, currentLine->len, sizeof(char));
+        currentLine->str = (bagByte*)tmpBuf;
+        currentLine->len = newLen;
     }
     return;
 }
@@ -1544,6 +1441,11 @@ static void storeJumpPoint(ASMSys *system, const char *dataLabel, ASMLineInfo *c
 //stores a data declaration to a list for further processing
 static void storeDataDeclaration(ASMSys *system, const char *dataLabel, char *input,
                                 ASMLineInfo *currentLine, bagDWord lineNum, int isArray){
+
+	if(checkValidLabel(dataLabel)){
+		errorMsg(system, lineNum, "Label contains invalid characters: \"%s\"\n", dataLabel);
+		return;
+	}
 
     char type = *input++,
          multiplier = 0;
@@ -1563,7 +1465,7 @@ static void storeDataDeclaration(ASMSys *system, const char *dataLabel, char *in
     }
 
     //resize the variable data struct to accomadate the new declaration
-    ASMData *temp = allocateMoreData(system->data, &system->dataCount);
+    ASMData *temp = ASMData_allocateMore(system->data, &system->dataCount);
     if(!temp){
         errorMsg(system, lineNum, "Error storing Variable: \"%s\"\n", dataLabel);
         return;
@@ -1588,6 +1490,8 @@ static void storeDataDeclaration(ASMSys *system, const char *dataLabel, char *in
         //Check if there are any array values that need to be stored
         size_t pos = strcspn ((char*)currentLine->str, input);
 
+
+        //If this check succeeds then there is a constant string to assign to a label
         if(pos > 0 && pos < currentLine->len) {
             //update pointer position to start with array default value contents
             char *arrayDefaults = (char*)currentLine->str + pos;
@@ -1607,6 +1511,7 @@ static void storeDataDeclaration(ASMSys *system, const char *dataLabel, char *in
 
             }
             //otherwise, check for { .., ..., ...., } etc..
+            //where each element is an integer of sorts
             else {
 
                 temp = strchr(arrayDefaults, '{');
@@ -1641,6 +1546,8 @@ static void storeDataDeclaration(ASMSys *system, const char *dataLabel, char *in
 }
 
 
+//ToDo: make a cleaner implementation of this, needlessly complex I think.
+//Should also work for dynamically sized out buffers
 static size_t _splitLineData(ASMLineInfo *currentLine, int offset, char *output, int outSize){
     if(offset >= currentLine->len)
         return 0;
@@ -1663,7 +1570,7 @@ static size_t _splitLineData(ASMLineInfo *currentLine, int offset, char *output,
 
     //copy section of string to output
     //printf("copying size: %d\n", len);
-    memcpy(output, currentLine->str + offset, sizeof(char) * len);
+    strncpy(output, (char*)currentLine->str + offset, sizeof(char) * len);
     if(len <= outSize) output[len] = '\0';
 
     while(*pos == ' ' || *pos == '\t'){
@@ -1673,7 +1580,7 @@ static size_t _splitLineData(ASMLineInfo *currentLine, int offset, char *output,
     return len;
 }
 
-//ToDo:Fix so that jump labels can exist on lines without trailing instruction
+//ToDo: make buffers more dynamic
 static int parseLineData(ASMSys *system, ASMLineInfo *currentLine, bagDWord lineNum){
     /*
     *if the line is a variable declaration, we need to collect the variable name,
@@ -1682,10 +1589,8 @@ static int parseLineData(ASMSys *system, ASMLineInfo *currentLine, bagDWord line
     int _txtBufferSize = (BASM_LABELLEN<<1) + BASM_STRLEN;
     char _txtBuffer[_txtBufferSize];
     memset(_txtBuffer, 0, _txtBufferSize);
-
     char     *dataLabel = (char*)&_txtBuffer[0],
-             *opLabel = (char*)&_txtBuffer[BASM_LABELLEN],
-             *input = (char*)&_txtBuffer[BASM_LABELLEN<<1];
+             *opLabel = (char*)&_txtBuffer[BASM_LABELLEN];
 
     //find data label
     int offset = 0;
@@ -1722,7 +1627,7 @@ static int parseLineData(ASMSys *system, ASMLineInfo *currentLine, bagDWord line
 
     if(!strlen(opLabel)) return 1;//no label for operation found
     //make sure opLabel actually contains an op code
-    int tempOperation = asm_listGetNoCase(system->global->opLabels, system->global->opCount, opLabel);
+    int tempOperation = ASMData_listGetNoCase(system->global->opLabels, system->global->opCount, opLabel);
     if(tempOperation < 0){//if not, then no label was found the first time
 #ifdef DEBUG_OUTPUT_LISTS
         printf("%s no op\n", opLabel);
@@ -1740,9 +1645,7 @@ static int parseLineData(ASMSys *system, ASMLineInfo *currentLine, bagDWord line
             storeArray++;
         case VAR://data declaration via the DATA operation
             //collect input value
-            test = _splitLineData(currentLine, offset, input, BASM_STRLEN);
-            if(!test) return -4;
-            storeDataDeclaration(system, dataLabel, input, currentLine, lineNum, storeArray);
+            storeDataDeclaration(system, dataLabel, (char*)currentLine->str + offset, currentLine, lineNum, storeArray);
         break;
 
     }
@@ -1752,13 +1655,13 @@ static int parseLineData(ASMSys *system, ASMLineInfo *currentLine, bagDWord line
 
 
 static void cleanDataAddr(ASMSys *system){
-    cleanAllData((ASMData*)system->data, &system->dataCount);
+    ASMData_cleanAll((ASMData*)system->data, &system->dataCount);
     return;
 }
 
 //clear and free all memory used by jump point storage
 static void cleanJumpPoints(ASMSys *system){
-    cleanAllData((ASMData*)system->jumps, &system->jumpCount);
+    ASMData_cleanAll((ASMData*)system->jumps, &system->jumpCount);
     return;
 }
 
@@ -1782,7 +1685,6 @@ static void cleanJumpPoints(ASMSys *system){
 *   then replaces it with its numerical value.
 */
 static int opToNumber(ASMSys *system, ASMLineInfo *currentLine, bagDWord lineNum){
-    char label[BASM_STRLEN];
     size_t len = 0;
 
     //grab the operation in line
@@ -1790,22 +1692,25 @@ static int opToNumber(ASMSys *system, ASMLineInfo *currentLine, bagDWord lineNum
     if(!pos) len = currentLine->len;
     else len = (pos - (char*)currentLine->str);
 
-    if(len > BASM_LABELLEN) len = BASM_LABELLEN;
+    //use this label buffer for the label as well as converting the operation
+    size_t bufSize = BASM_INSTRUCT_SIZE + (currentLine->len - len) + 1;
+    char label[bufSize];
+
     memcpy(&label[0], currentLine->str, sizeof(char) * len);
-    if(len < BASM_LABELLEN) label[len] = '\0';
+    label[len] = '\0';
 
 
     if(len > 0){
         check_Deprecated(system, label);
-        bagOpInt tempOpNum = asm_listGetNoCase(system->global->opLabels, system->global->opCount, label);
+        bagOpInt tempOpNum = ASMData_listGetNoCase(system->global->opLabels, system->global->opCount, label);
         if(tempOpNum > -1){
             bagOpInt opNum = system->global->opLabels[tempOpNum].addr;
 
 #ifdef USE_FUNC_ADDR
-            storeAddress((bagAddrPtr)system->global->op[opNum], (bagUByte*)ASM_LineBuf);
+            storeAddress((bagAddrPtr)system->global->op[opNum], (char*)label);
 #else
             //copy cpu operation number to line buffer
-            memcpy(ASM_LineBuf, &opNum, sizeof(char) * BASM_OPNUM_SIZE);
+            memcpy(label, &opNum, sizeof(char) * BASM_OPNUM_SIZE);
 #endif
 
             //copy rest of line to a buffer
@@ -1816,14 +1721,14 @@ static int opToNumber(ASMSys *system, ASMLineInfo *currentLine, bagDWord lineNum
             }
 
             if(len < currentLine->len)
-                strncpy(&ASM_LineBuf[BASM_INSTRUCT_SIZE], (char*)currentLine->str + len,
-                        BASM_STRLEN - BASM_INSTRUCT_SIZE);
+                strncpy(&label[BASM_INSTRUCT_SIZE], (char*)currentLine->str + len,
+                        bufSize - BASM_INSTRUCT_SIZE);
             else
-                ASM_LineBuf[BASM_INSTRUCT_SIZE] = '\0';
+                label[BASM_INSTRUCT_SIZE] = '\0';
 
             //replace old line
             size_t newSize = (currentLine->len -len) + BASM_INSTRUCT_SIZE;
-            if(ASMLine_Set(currentLine, ASM_LineBuf, (bagWord)newSize)){
+            if(ASMLine_Set(currentLine, label, (bagWord)newSize)){
                 errorMsg(system, lineNum, "Error allocating line: %d\n", lineNum);
                 return 0;
             }
@@ -1850,17 +1755,10 @@ static int _scanLineData(ASMSys *system, ASMLineInfo *curLine, bagDWord lineNum)
 //replace arguments with their ram addresses
 static int compileASMLine(ASMSys *system, ASMLineInfo *currentLine, bagDWord lineNum){
 
-    //Buffer for working on the line
-    //directly copy the op number to the line buffer
-    bagByte lineBuf[BASM_STRLEN];
-    //for(int v = 0; v < BASM_OPNUM_SIZE; v++)
-    //    lineBuf[v] = currentLine->str[v];
-    memcpy(lineBuf, currentLine->str, sizeof(char) * BASM_INSTRUCT_SIZE);
-
     if(currentLine->len > BASM_INSTRUCT_SIZE){
 
         //exit on errors
-        if(!varhwToAddr(system, currentLine, lineNum, lineBuf, BASM_STRLEN))
+        if(!varhwToAddr(system, currentLine, lineNum))
             return 0;
 
 #ifndef USE_FUNC_ADDR
@@ -1880,6 +1778,8 @@ static int compileASMLine(ASMSys *system, ASMLineInfo *currentLine, bagDWord lin
     return 1;
 }
 
+
+//goes through every line and compiles it to byte code
 static int compileASMCode(ASMSys *system, ASMLineInfo *allLines, bagDWord linesCount){
 
     bagDWord i = 0;
@@ -1896,10 +1796,13 @@ static int compileASMCode(ASMSys *system, ASMLineInfo *allLines, bagDWord linesC
 *line by line to a buffer and parses for program flags
 */
 /*===================================================================================
-*   .asm file reading
+*   .asm file
+*		Reading of settings, and storing of file data into program memory
+* 		When reading file, initial scan of file takes place to store data, and
+* 		jump declarations
 *
-*
-*
+*	.basm file
+* 		reading and writing .basm (compiled asm) files
 ===================================================================================*/
 
 //Creating, modifying and creating lines within the program
@@ -2186,8 +2089,8 @@ static int asmFileRead(const char *filepath, ASMSys *system){
 
     if(err == 0){//no errors
         //then sort lists for faster searching
-        asm_listSort(system->data, system->dataCount);
-        asm_listSort(system->jumps, system->jumpCount);
+        ASMData_sort(system->data, system->dataCount);
+        ASMData_sort(system->jumps, system->jumpCount);
 
         return 1;
     }
@@ -2214,7 +2117,7 @@ static int calcRelativeAddr(ASMSys *sys, ASMLineInfo *curLine, bagUByte *newLine
     bagByte *line = &curLine->str[BASM_INSTRUCT_SIZE];
     bagUByte *outLine = &newLine[BASM_INSTRUCT_SIZE];
 
-    bagAddrPtr ramStart = (bagAddrPtr)&sys->memory.byte[0],
+    bagAddrPtr ramStart = (bagAddrPtr)&sys->memory.start[0],
                 ramEnd   = (bagAddrPtr)&sys->memory.byte[BASM_MEMSIZE - 1],
                 regStart = (bagAddrPtr)&sys->cpu.reg[0],
                 regEnd   = (bagAddrPtr)&sys->cpu.reg[BASM_REGCOUNT - 1];
@@ -2231,6 +2134,7 @@ static int calcRelativeAddr(ASMSys *sys, ASMLineInfo *curLine, bagUByte *newLine
             curAddr -= regStart;
             curAddr |= BASMC_ADDR_REG;
         }
+
         //loading addresses
         else if(curAddr & BASMC_ADDR_REG) {
             curAddr &= ~BASMC_ADDR_REG;
@@ -2239,7 +2143,7 @@ static int calcRelativeAddr(ASMSys *sys, ASMLineInfo *curLine, bagUByte *newLine
             curAddr &= ~BASMC_ADDR_RAM;
             curAddr += ramStart;
         } else {
-            printf("unknown address\n");
+        	errorMsg(sys, -1, "Warning: reading an unknown memory address.\n");
         }
 
         //store new value again
@@ -2291,25 +2195,20 @@ static int readBinaryHeader(FILE *binFile, ASMSys *system){
 static int loadBinary(const char *binPath, ASMSys *system){
     FILE *inFile = fopen(binPath, "rb");
     if(!inFile){
-        printFunction(system, "Error opening binary\n");
         return 0;
     }
-#ifdef DBGTEXT
-    if(system->settings.debugTxt)
-        printFunction(system, "Reading binary\n");
-#endif
+    VM_MSG("Reading Binary\n");
 
     //need a bit more from the binary header to load the file
     ASMHeader header = {};
     fread(&header, 1, sizeof(ASMHeader), inFile);
     //read ram dump
     if(header.ramSize > 0){
-#ifdef DBGTEXT
-        if(system->settings.debugTxt) printFunction(system, "Reading ram dump\n");
-#endif
+        VM_MSG("Reading ram dump\n");
+
         system->memory.pos = header.ramSize;
         fseek (inFile, header.ram, SEEK_SET);
-        fread(&system->memory.byte, 1, system->memory.pos, inFile);
+        fread(system->memory.start, sizeof(bagMemInt), system->memory.pos, inFile);
     }
 
     //now read rest of program
@@ -2319,10 +2218,8 @@ static int loadBinary(const char *binPath, ASMSys *system){
     ASMFile *prgmFile = &system->prgm.file;
 
     prgmFile->line_count = header.lines;
-#ifdef DBGTEXT
-    if(system->settings.debugTxt)
-        printFunction(system, "line count: %d\n", prgmFile->line_count);
-#endif
+    VM_MSG("Line count: %d\n", prgmFile->line_count);
+
     asm_calloc(prgmFile->line, sizeof(ASMLineInfo), prgmFile->line_count);
     if(!prgmFile->line){
         errorMsg(system, -1, "Error allocating binary space\n");
@@ -2334,17 +2231,14 @@ static int loadBinary(const char *binPath, ASMSys *system){
         ASMLineInfo *curLine = &prgmFile->line[i];
         //first read arg count
         fread(&curLine->args, 1, header.lenSize, inFile);
-#ifdef DBGTEXT
-        if(system->settings.debugTxt)
-            printFunction(system, "args: %d ", curLine->args);
-#endif
+        VM_MSG("args: %d\n", curLine->args);
+
         //then read line size
         fread(&curLine->len, 1, header.lenSize, inFile);
-#ifdef DBGTEXT
-        if(system->settings.debugTxt)
-            printFunction(system, "len: %d\n", curLine->len);
-#endif
+        VM_MSG("len: %d\n", curLine->len);
+
         //then allocate and read line
+
         asm_calloc(curLine->str, 1, (sizeof(char) * curLine->len));
         if(!curLine->str){
             errorMsg(system, -1, "Error allocating line space\n");
@@ -2368,10 +2262,7 @@ static int loadBinary(const char *binPath, ASMSys *system){
 *Dump the optimized file into a binary file to load for later
 */
 static int dumpBinary(const char *outFile, ASMSys *system){
-#ifdef DBGTEXT
-    if(system->settings.debugTxt)
-        printFunction(system, "Writing binary;\n");
-#endif
+    VM_MSG("Writing binary\n");
 
     ASMFile *prgm = &system->prgm.file;
     if(asmFileLineCount(prgm) == 0){
@@ -2417,7 +2308,7 @@ static int dumpBinary(const char *outFile, ASMSys *system){
     //dump the initialized ram state. Variables and constant values will be
     //stored in here
     if(header.ramSize > 0)
-        fwrite(system->memory.byte, sizeof(bagMemInt),
+        fwrite(system->memory.start, sizeof(bagMemInt),
                  header.ramSize, dest);
 
 
@@ -2453,11 +2344,7 @@ static int dumpBinary(const char *outFile, ASMSys *system){
 
 //output the optimized code to a binary for faster loading in future run times (if flag set in source)
 static int _makeBinFile(FilePath *inPath, ASMSys *system){
-
-#ifdef DBGTEXT
-    if(system->settings.debugTxt)
-        printFunction(system, "Creating binary file\n");
-#endif
+    VM_MSG("Creating binary file\n");
 
     FilePath *exportPath = FilePath_Init();
     if(!exportPath){
@@ -2484,7 +2371,6 @@ static int _isBinFile(const char *path, ASMSys *system){
     char magicNumber[8];
     FILE *temp = fopen(path, "rb");
     if(temp == NULL){
-        printFunction(system, "no file!\n");
         return -1;
     }
     fread(&magicNumber, 1, sizeof(magicNumber), temp);
@@ -2497,7 +2383,6 @@ static int asmFileReadSettings(FilePath *filepath, ASMSys *system){
     char *p = FilePath_Str(filepath);
     FILE * file = fopen(p, "rb");
     if(file == NULL){
-        printFunction(system, "null file!\n");
         return -1;
     }
     FilePath_DelStr(filepath);
@@ -2541,9 +2426,7 @@ static int asmloadFile(ASMSys *system, const char *file){
 
     if(_isBinFile(file, system)){
         //the .basm binary is a dump of an already optimized .asm file
-#ifdef DBGTEXT
-        if(system->settings.debugTxt) printFunction(system, "loading binary\n");
-#endif
+    	VM_MSG("Loading binary\n");
         //no work needs to be done to convert it
         int test = loadBinary(file, system);
         if(test != 1)
@@ -2558,11 +2441,7 @@ static int asmloadFile(ASMSys *system, const char *file){
         if(!compileASMCode(system, system->prgm.file.line, system->prgm.file.line_count))
             return -1;
 
-#if defined(DBGTEXT)
-        if(system->settings.debugTxt){
-            printFunction(system, "File compiled!\nDoing some cleanup...\n");
-        }
-#endif
+        VM_MSG("File compiled!\nDoing some cleanup...\n");
 
         //make binary file if requested
         if(GET_FLAG(system->flags, ASM_COMPILE)){
@@ -2577,11 +2456,8 @@ static int asmloadFile(ASMSys *system, const char *file){
             cleanDataAddr(system);
     }
 
-#if defined(DBGTEXT)
-        if(system->settings.debugTxt){
-            printFunction(system, "Ready to execute!\n");
-        }
-#endif
+    VM_MSG("Ready to execute!\n");
+
     return 1;
 }
 
@@ -2592,6 +2468,8 @@ static int asmloadFile(ASMSys *system, const char *file){
 *
 *
 ===================================================================================*/
+
+
 static int _makeRoot(FilePath *filePath, ASMSys *system){
     char *path = NULL;
 
@@ -2612,6 +2490,10 @@ static int _makeRoot(FilePath *filePath, ASMSys *system){
     FilePath_DelStr(filePath);
     return 0;
 }
+
+
+
+
 
 /*
 *Clean all memory used by the system
@@ -2665,32 +2547,7 @@ void ASM_CleanSystem(ASMSys *system){
 }
 
 
-#if defined(DUMP_OPS_LIST)
-static int asm_ExportOpsList(ASMSys *system){
-    //char rootPath[MAX_PATH];
-    //FilePath_Export(&system->rootPath, rootPath, MAX_PATH);
-    FilePath *temp = FilePath_Init();
-    FilePath_Copy(temp, &system->rootPath);
-    FilePath_Add(temp, "opslog.txt");
 
-    char *filePath = FilePath_Str(temp);
-
-    printFunction(system, "Dumping ops list to:\n\t%s\n", filePath);
-    FILE *outfile = fopen(filePath, "wb");
-
-    if(!outfile){
-        printFunction(system, "Error outputting ops\n");
-        return 0;
-    }
-    for (int i = 0; i < system->global->opCount; i++)
-        fprintf(outfile, "%s (%d)\n", system->global->opLabels[i].label, system->global->opLabels[i].addr);
-    fclose(outfile);
-
-    //clean that up
-    FilePath_Destroy(temp);
-    return 1;
-}
-#endif
 
 
 //Assumes the system has already been initialized
@@ -2710,8 +2567,8 @@ void ASM_ResetSys(ASMSys *system) {
 
     //initialize stack register to the proper address
 #if defined(BASM_ENABLE_STACK)
-    system->cpu.reg[REG_SP] = (bagAddrPtr)&system->memory.stack[BASM_STACKSIZE-1];
-    memset(system->memory.stack, 0, BASM_STACKSIZE);
+    system->cpu.reg[REG_SP] = (bagReg)system->memory.start - 1;
+    //memset(system->memory.stack, 0, BASM_STACKSIZE);
     //printf("Stack addr: %p\n", (bagAddrPtr*)system->cpu.reg[REG_SP]);
 #endif
 
@@ -2728,12 +2585,12 @@ void ASM_ResetSys(ASMSys *system) {
     return;
 }
 
+
+
 //if file is NULL, we can initialize a system for a line by line by line interpretation
 char ASM_InitSystem(FilePath *file, ASMSys *system, int flags){
     //read file settings first for initialization instructions
-#if defined(DBGTEXT)
-    printFunction(system,"Initializing System...\n");
-#endif
+    VM_MSG("Initializing System...\n");
 
     //calculate the memory of this system = new mem - prev mem used
     bagUWord oldMem = ASM_MEMUSED;
@@ -2764,10 +2621,7 @@ char ASM_InitSystem(FilePath *file, ASMSys *system, int flags){
         return -1;
 
     //read file settings first for initialization instructions
-#if defined(DBGTEXT)
-    if(system->settings.debugTxt)
-        printFunction(system,"Reading program settings...\n");
-#endif
+    VM_MSG("Reading Program Settings...\n");
 
     //read file pragmas first to see how to initialize the system
     if(file && asmFileReadSettings(file, system) <=0){
@@ -2775,18 +2629,11 @@ char ASM_InitSystem(FilePath *file, ASMSys *system, int flags){
         //return -1;
     }
 
-#if defined(DBGTEXT)
-    if(system->settings.debugTxt)
-        printFunction(system,"Initializing CPU Ops\n");
-#endif
-
+    VM_MSG("Initializing CPU OPS...\n");
     //initialize standard operations
     ASM_InitSTDOps(system);
 
-#if defined(DBGTEXT)
-    if(system->settings.debugTxt)
-        printFunction(system,"Initializing ram...\n");
-#endif
+    VM_MSG("Initializing RAM...\n");
     //initialize ram
     if(!asmInitRam(system)){
         errorMsg(system, -1, "Error allocating RAM.");
@@ -2800,47 +2647,35 @@ char ASM_InitSystem(FilePath *file, ASMSys *system, int flags){
     ASM_initInput(system);
 #endif
 
-#if defined(DBGTEXT)
-    if(system->settings.debugTxt)
-        printFunction(system,"Initializing video...\n");
-#endif
-
+    VM_MSG("Initializing Video...\n");
     //initiate video if enabled
 #if defined(BASM_COMPILE_VIDEO)
-    if(!ASM_videoInit(system))
-        return 0;
+    if(!ASM_videoInit(system)) return 0;
 #endif
 
     //initialize external libraries
 #if defined(BASM_COMPILE_EXTLIBS)
-    if(!ASM_extLibInit(system))
-        return 0;
-#endif
-#if defined(DBGTEXT)
-    if(system->settings.debugTxt)
-        printFunction(system,"External Libs Done!\n");
+    if(!ASM_extLibInit(system)) return 0;
 #endif
 
+    VM_MSG("External Libs Initialized\n");
     //sort collected operations for faster lookup
     if(system->global->stdOpInit == 1)//only ssort if this is the first time initializing
-        asm_listSortNoCase(system->global->opLabels, system->global->opCount);
-
-
+        ASMData_sortNoCase(system->global->opLabels, system->global->opCount);
 
 #if defined(DUMP_OPS_LIST)
-    asm_ExportOpsList(system);
+    exportOpsList(system);
 #endif
-
 
     //load the script file now
     if(file){
-#if defined(DBGTEXT)
-        //printFunction(system,"Reading program file...\n");
-#endif
-	    int err = asmloadFile(system, FilePath_Str(file));
+    	VM_MSG("Reading program file...\n");
+
+    	char *fileStr = FilePath_Str(file);
+	    int err = asmloadFile(system, fileStr);
 	    if(err < 1){
             FilePath_DelStr(file);
-	        errorMsg(system, -1, "Error loading file: \"%s\"\n", file);
+	        errorMsg(system, -1, "Error loading file: \"%s\"\n", fileStr);
 	        return err;
 	    }
 	    FilePath_DelStr(file);
@@ -2850,11 +2685,9 @@ char ASM_InitSystem(FilePath *file, ASMSys *system, int flags){
 
     //update memory used by the system
     ASM_MEMUSED += sizeof(ASMSys);
-#if defined(DBGTEXT)
-    if(system->settings.debugTxt)
-        printFunction(system,"System fully initialized\n");
-#endif
 
+
+    VM_MSG("System fully initialized!\n");
     system->memUsed = ASM_MEMUSED - oldMem;
     return 1;
 }
@@ -2869,6 +2702,114 @@ int ASM_BuildFile(ASMSys *system, FilePath *file){
     return status;
 }
 
+
+
+
+
+
+#ifndef USE_SCRIPT_STACK
+
+//Not really used anymore when script stack is enabled
+//default function for running an asm file
+int ASM_run(ASMSys *system, FilePath *file){
+
+
+
+    int flags = ASM_DATAPURGE | ASM_JUMPPURGE;
+    //if no file is selected, then we can just line by line execute
+    if(!file) flags |= ASM_LINEBYLINE;
+
+    /*first initiate the system, we are purging all variable and jump declarations
+    as they aren't needed after optimization.
+    However the is the choice to keep the sorted name lists in memory if one
+    so desires to use the interpreter for other means in their own projects.
+    */
+    if(ASM_InitSystem(file, system, flags) != 1)
+        goto EXIT;
+
+    PrintBanner(system, Platform);
+    printFunction(system, "Running Program:\n*****************************\n\n\n");
+
+    //if runtime is defined, we will time the program as it runs
+#if defined(RUNTIME)
+    u32 timer = 0;
+    static float finalTime = 0;
+    if(system->settings.runTime){
+        Timer_start(&timer);
+    }
+#endif
+
+    //main asm interpreting loop
+
+#if defined(BASM_ENABLE_REPL)
+    void asm_terminalLoop(ASMSys *system);
+   	//if a script file has been supplied, work through it as normal
+    if(!GET_FLAG(system->flags, ASM_LINEBYLINE))
+    	while(ASM_Step(system));
+
+    //otherwise, enter terminal mode where users can immediately execute typed code
+    //line by line
+    else
+    	asm_terminalLoop(system);
+#else
+    //no repl support, just go through everything
+	while(ASM_Step(system));
+#endif
+
+#if defined(RUNTIME)
+    if(system->settings.runTime){
+        finalTime = Timer_getTicks(&timer);
+    }
+#endif
+
+    //if on the DS or gba, the console needs to be initialized
+    //to output run time information
+#if defined (PLATFORM_DS) || (PLATFORM_GBA)
+    extern void ds_initConsole(void);
+    if(!system->settings.console)
+        ds_initConsole();
+#endif
+    printFunction(system, "\n\n\n*****************************\nProgram Complete...\n");
+
+    EXIT:
+    //check if the program exited with errors
+    //if(system->cpu.exit == BASM_EXIT_ERROR)
+    //    printFunction(system, "Exiting with errors!\n");
+
+    //print the time it took for the program to fully complete
+#if defined(RUNTIME)
+    if(system->settings.runTime){
+        char timeText[16];
+        sprintf(timeText, "%04f", finalTime);
+        printFunction(system, "Program completed in %s s\n", timeText);
+    }
+#endif
+
+    //output the total operations executed in program
+#if defined(COUNT_OPERATIONS)
+    printFunction(system, "%u total operations executed\n", (unsigned long)system->settings.operations);
+#endif
+
+    printFunction(system, "mem used: %u\n", system->memUsed);
+    //free and clean all memory allocations used
+    ASM_CleanSystem(system);
+    printFunction(system, "left over: %d\n", ASM_MEMUSED);
+
+    return 0;
+}
+
+
+
+
+
+#if defined(BASM_ENABLE_REPL)
+
+/*===================================================================================
+*   Command Line REPL system, not yet finished.
+*
+*
+*
+===================================================================================*/
 //ToDo: add better return value checking for asmPushLine
 //ToDo: add ability to call a line execution from within a script
 /*
@@ -2898,8 +2839,8 @@ int ASM_ExecuteLine(ASMSys *system, char *input, int *pushLines, int *pushDepth)
 	}
 
 	//sort data collected
-    asm_listSort(system->data, system->dataCount);
-    asm_listSort(system->jumps, system->jumpCount);
+    ASMData_sort(system->data, system->dataCount);
+    ASMData_sort(system->jumps, system->jumpCount);
 
     ASMLineInfo *curLine = &system->prgm.file.line[pos];
     if(!compileASMLine(system, curLine, pos)){
@@ -2974,90 +2915,8 @@ void asm_terminalLoop(ASMSys *system){
 	return;
 }
 
-
-//default function for running an asm file
-int ASM_run(ASMSys *system, FilePath *file){
-
-    int flags = ASM_DATAPURGE | ASM_JUMPPURGE;
-    //if no file is selected, then we can just line by line execute
-    if(!file) flags |= ASM_LINEBYLINE;
-
-    /*first initiate the system, we are purging all variable and jump declarations
-    as they aren't needed after optimization.
-    However the is the choice to keep the sorted name lists in memory if one
-    so desires to use the interpreter for other means in their own projects.
-    */
-    if(ASM_InitSystem(file, system, flags) != 1)
-        goto EXIT;
-
-
-    PrintBanner(system, Platform);
-
-    printFunction(system, "Running Program:\n*****************************\n\n\n");
-
-    //if runtime is defined, we will time the program as it runs
-#if defined(RUNTIME)
-    u32 timer = 0;
-    static float finalTime = 0;
-    if(system->settings.runTime){
-        Timer_start(&timer);
-    }
+//end of BASM_ENABLE_REPL
 #endif
 
-    //main asm interpreting loop
-#if defined(D___SYS_DS2_)
-    //just a quick loop on the DS2
-    while(ASM_Step(system));
-#else
-    	//if a script file has been supplied, work through it as normal
-    	if(!GET_FLAG(system->flags, ASM_LINEBYLINE))
-    		while(ASM_Step(system));
-
-    	//otherwise, enter terminal mode where users can immediately execute typed code
-    	//line by line
-    	else
-    		asm_terminalLoop(system);
+//end of USE_SCRIPT_STACK
 #endif
-
-#if defined(RUNTIME)
-    if(system->settings.runTime){
-        finalTime = Timer_getTicks(&timer);
-    }
-#endif
-
-    //if on the DS or gba, the console needs to be initialized
-    //to output run time information
-#if defined (PLATFORM_DS) || (PLATFORM_GBA)
-    extern void ds_initConsole(void);
-    if(!system->settings.console)
-        ds_initConsole();
-#endif
-    printFunction(system, "\n\n\n*****************************\nProgram Complete...\n");
-
-    EXIT:
-    //check if the program exited with errors
-    //if(system->cpu.exit == BASM_EXIT_ERROR)
-    //    printFunction(system, "Exiting with errors!\n");
-
-    //print the time it took for the program to fully complete
-#if defined(RUNTIME)
-    if(system->settings.runTime){
-        char timeText[16];
-        sprintf(timeText, "%04f", finalTime);
-        printFunction(system, "Program completed in %s s\n", timeText);
-    }
-#endif
-
-    //output the total operations executed in program
-#if defined(COUNT_OPERATIONS)
-    printFunction(system, "%u total operations executed\n", (unsigned long)system->settings.operations);
-#endif
-
-    printFunction(system, "mem used: %u\n", system->memUsed);
-    //free and clean all memory allocations used
-    ASM_CleanSystem(system);
-    printFunction(system, "left over: %d\n", ASM_MEMUSED);
-
-    return 0;
-}
-
