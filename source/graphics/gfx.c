@@ -458,3 +458,26 @@ void GfxObj_Draw(gfxScreen_t screen, gfx3dSide_t side, GfxObj_t *gfx, s16 x, s16
 	fb.buffer = gfxGetFramebuffer(screen, side, &fb.wd, &fb.ht);
 	GfxObj_Render(&fb, gfx, x, y);
 }
+
+
+u8 GfxObj_CreateBlank(GfxObj_t *gfx, s16 width, s16 height)
+{
+	gfx->wd = width;
+	gfx->ht = height;
+
+	//width * height * 3 (for 24 bits per pixel)
+	gfx->buffer = malloc(width * height * 3 * sizeof(char));
+	if(!gfx->buffer) {
+		printf("Error allocating GfxObj_t buffer\n");
+		return 1;
+	}
+
+	return 0;
+}
+
+void GfxObj_Delete(GfxObj_t *gfx) {
+	if(!gfx) return;
+
+	free(gfx->buffer);
+	gfx->buffer = NULL;
+}

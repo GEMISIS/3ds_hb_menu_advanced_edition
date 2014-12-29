@@ -32,7 +32,7 @@
 #if defined(BASM_COMPILE_VIDEO)
 
 //global addresses of the ds2 io layer pointers,
-static void **screen_addr[2] = {(void*)&down_screen_addr, (void*)&up_screen_addr};
+//static void **screen_addr[2] = {(void*)&down_screen_addr, (void*)&up_screen_addr};
 
 /*
 Manage the order in which objects are drawn
@@ -51,10 +51,12 @@ typedef enum{
 }VIDEO_QUEUE_TYPES;
 
 //type of data for fonts
+#ifdef BASM_ALLOW_FONTS
 typedef struct fontData{
   wString string;//the string data
   TextBox_t box;//output data
 }fontData;
+#endif
 
 //this needs to be 4 bytes alligned!
 typedef struct vidQNode{
@@ -154,10 +156,6 @@ bagAddrPtr *ASM_setVideoAddr(ASMSys *system, char *label){
     }
     else
 #endif
-    if (!strncmp(label, LCDSCREEN_BUF, strlen(LCDSCREEN_BUF))) {
-        label += strlen(LCDSCREEN_BUF);
-        data = (bagAddrPtr*)&screen_addr[BASM_atoi(label)];
-    }
     //handle screen buffers
     return data;
 }
@@ -223,34 +221,52 @@ static int initGfxQue(ASMSys *system){
 
 static void freeScreen(ASMSys *system, int screen){
     if(system->video.screen[screen]){
-        BAG_Display_DeleteObj(system->video.screen[screen]);
+        //BAG_Display_DeleteObj(system->video.screen[screen]);
+      GfxObj_Delete(system->video.screen[screen]);
         free(system->video.screen[screen]);
     }
     system->video.screen[screen] = NULL;
     return;
 }
 
-static int initScreen(ASMSys *system, int screen){
-  freeScreen(system, screen);
+static int initScreen(ASMSys *system){
+  freeScreen(system, GFX_TOP);
+  freeScreen(system, GFX_BOTTOM);
 
-  system->video.screen[screen] = calloc(1, sizeof(GFXObj_t));
-  if(system->video.screen[screen] == NULL){
-      errorMsg(system, -1, "Error allocating screens.\n");
+  system->video.screen[GFX_TOP] = calloc(1, sizeof(GfxObj_t));
+  if(system->video.screen[GFX_TOP] == NULL){
+      errorMsg(system, -1, "Error allocating  top screens.\n");
       return 0;
   }
 
-  int width = system->settings.screenWidth, height = system->settings.screenHeight;
+  GfxObj_t *tmpScreen = system->video.screen[GFX_TOP];
+  system->video.screen[GFX_TOP]->buffer = gfxGetFramebuffer(GFX_TOP, GFX_LEFT,
+                                            &tmpScreen->wd, &tmpScreen->ht);
+
+
+  system->video.screen[GFX_BOTTOM] = calloc(1, sizeof(GfxObj_t));
+  if(system->video.screen[GFX_BOTTOM] == NULL){
+      errorMsg(system, -1, "Error allocating  top screens.\n");
+      return 0;
+  }
+  tmpScreen = system->video.screen[GFX_TOP];
+  system->video.screen[GFX_BOTTOM]->buffer = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT,
+                                            &tmpScreen->wd, &tmpScreen->ht);
+
+
+
+  /*int width = system->settings.screenWidth, height = system->settings.screenHeight;
 
   int err = BAG_Display_CreateObj(system->video.screen[screen], 16, width, height, width, height);
   if(err != ERR_NONE)
-      errorMsg(system, -1, "Error allocating Screen Buffer: Screen:%d, Err:%d\n", screen, err);
+      errorMsg(system, -1, "Error allocating Screen Buffer: Screen:%d, Err:%d\n", screen, err);*/
 
 
   //redefine the default screen output device to this temp one
-  system->video.outScreen[screen] = (void *)&system->video.screen[screen]->buffer.gfx;
-
+  system->video.outScreen[GFX_TOP] = (void *)&system->video.screen[GFX_TOP]->buffer;
+  system->video.outScreen[GFX_BOTTOM] = (void *)&system->video.screen[GFX_BOTTOM]->buffer;
   //clear display screen
-  asm_fill16bit(0, *system->video.outScreen[screen], getScreenSize(system)>>1);
+  //asm_fill16bit(0, *system->video.outScreen[screen], getScreenSize(system)>>1);
 
   return 1;
 }
@@ -260,8 +276,10 @@ static int initScreen(ASMSys *system, int screen){
   static void freeSprites(ASMSys *system){
       for(int i = 0; i < BASM_MAX_SPRITES; i++){
           if(system->video.sprite[i]){
-              BAG_Display_DeleteObj(system->video.sprite[i]);
-              free(system->video.sprite[i]);
+              //BAG_Display_DeleteObj(system->video.sprite[i]);
+              //free(system->video.sprite[i]);
+            GfxObj_Delete(system->video.sprite[i]);
+            free(system->video.sprite[i]);
           }
           system->video.sprite[i] = NULL;
       }
@@ -272,7 +290,7 @@ static int initScreen(ASMSys *system, int screen){
   static int initSprites(ASMSys *system){
     freeSprites(system);
     for(int i = 0; i < BASM_MAX_SPRITES; i++){
-        system->video.sprite[i] = calloc(1, sizeof(GFXObj_t));
+        system->video.sprite[i] = calloc(1, sizeof(GfxObj_t));
         if(system->video.sprite[i] == NULL){
             errorMsg(system, -1, "Error allocating sprite: %d\n", i);
             return 0;
@@ -338,11 +356,11 @@ static int initScreen(ASMSys *system, int screen){
 
 
 int ASM_screenInit(ASMSys *system){
-    for(int i = 0; i < 2; i++){
+    /*for(int i = 0; i < 2; i++){
         if(!initScreen(system, i))
             return 0;
-    }
-    return 1;
+    }*/
+    return initScreen(system);
 }
 
 
@@ -372,9 +390,9 @@ void ASM_freeVideo(ASMSys *system){
     -Allows direct memory access to graphic objects and the screen :D
  ======================================================================================*/
 static void rgb(ASMSys *system){
-    (*system->cpu.arg[0]) = RGB15((unsigned char)(*system->cpu.arg[1]),
+  /*  (*system->cpu.arg[0]) = RGB15((unsigned char)(*system->cpu.arg[1]),
                                   (unsigned char)(*system->cpu.arg[2]),
-                                  (unsigned char)(*system->cpu.arg[3]));
+                                  (unsigned char)(*system->cpu.arg[3]));*/
     return;
 }
 
@@ -392,12 +410,12 @@ static void _getLCDBuffer(ASMSys *system) {
 
 //essentially a 16 bit memset
 static void _gfxMemSet(ASMSys *system) {
-    //dest buffer, value to fill, size of dest buffer
+/*    //dest buffer, value to fill, size of dest buffer
     unsigned short *dest = (unsigned short*)*system->cpu.arg[0];
     unsigned short col = *system->cpu.arg[1];
     bagDWord size = (bagDWord)*system->cpu.arg[2];
     while(size-- > 0) *dest++ = col;
-    return;
+    return;*/
 }
 
 static void _gfxSetPix(ASMSys *system){
@@ -416,24 +434,28 @@ static void _gfxSetPix(ASMSys *system){
     y = (y >= ht) ? ht - 1 : y;
 
 
-    unsigned short col = (unsigned short)*system->cpu.arg[5];
-    dest[x + (y * wd)] = col;
+
+    u8 *rgbColor = (u8*)system->cpu.arg[5];
+    u32 pixel_index = 3 * (ht - y - 1 + x * ht);
+    dest[pixel_index] = rgbColor[2];      // blue
+    dest[pixel_index + 1] = rgbColor[1];  // green
+    dest[pixel_index + 2] = rgbColor[0];  // red
     return;
 }
 
 static void _gfxSetPixRGB(ASMSys *system) {
-    int red     = (int)*system->cpu.arg[4],
-    green   = (int)*system->cpu.arg[5],
-    blue    = (int)*system->cpu.arg[6];
+    int red     = (int)*system->cpu.arg[5],
+    green   = (int)*system->cpu.arg[6],
+    blue    = (int)*system->cpu.arg[7];
 
-    *system->cpu.arg[4] = RGB15(red, green, blue);
+    *system->cpu.arg[5] = (u32)(red | green<<8 | blue << 16);
     _gfxSetPix(system);
     return;
 }
 
 //return pixel color from a specified buffer
 static void _gfxGetPix(ASMSys *system){
-    //register, dest, destWd, x pos, y pos
+ /*   //register, dest, destWd, x pos, y pos
     unsigned short *dest = (unsigned short *)*system->cpu.arg[1];
     int    destWd = (int)*system->cpu.arg[2],
                 x = (int)*system->cpu.arg[3],
@@ -442,13 +464,13 @@ static void _gfxGetPix(ASMSys *system){
     //printf("x: %d, y: %d, wd: %d\n", x, y, destWd);
     unsigned short col = dest[x + (y * destWd)];
     (*system->cpu.arg[0]) =(bagDWord)col;
-    return;
+    return;*/
 }
 
 
 
 static void _gfxDrwLine(ASMSys *system){
-    int arg = 0;
+/*    int arg = 0;
     //dest, dest wd, dest ht, x1, y1, x2, y2, color, thickness
     unsigned short *dest = (unsigned short*)*system->cpu.arg[arg++];
 
@@ -464,11 +486,11 @@ static void _gfxDrwLine(ASMSys *system){
 
     BAG_Draw_BlitLineEx(dest, destWd, destHt,
                         x1, y1, x2, y2, color, size);
-    return;
+    return;*/
 }
 
 static void _gfxDrwRec(ASMSys *system){
-    //dest, dest wd, dest ht, x1, y1, x2, y2, color
+/*    //dest, dest wd, dest ht, x1, y1, x2, y2, color
 
     int arg = 0;
     unsigned short *dest = (unsigned short*)(*system->cpu.arg[arg++]);
@@ -483,7 +505,7 @@ static void _gfxDrwRec(ASMSys *system){
     BAG_Draw_Rect(dest, destWd, destHt,
                   x1, y1,x2, y2, color);
 
-    return;
+    return;*/
 }
 
 /*==============================================
@@ -905,7 +927,7 @@ static void _drawAll(ASMSys *system, videoQueue *qSys){
     if(!curNode) break;
 
     //unsigned short *dest = *system->video.outScreen[curNode->screen];
-    int i = curNode->updateSlot;
+
     switch(curNode->type){
 
       #if defined(BASM_ALLOW_SPRITES)
@@ -922,10 +944,11 @@ static void _drawAll(ASMSys *system, videoQueue *qSys){
       #endif
 
       #if defined(BASM_ALLOW_BACKGROUNDS)
-        case QUEUE_TYPE_BG:
+        case QUEUE_TYPE_BG: {
+            int i = curNode->updateSlot;
             BAG_TileBG_DrawBGEx(curNode->dest, (TiledBG_t*)curNode->data, vid->bgX[i], vid->bgY[i],
                               curNode->destWd, curNode->destHt);
-        break;
+        }break;
       #endif
 
       /*#if defined(BASM_ALLOW_FONTS)
@@ -949,12 +972,12 @@ static void _drawAll(ASMSys *system, videoQueue *qSys){
   _drawAll(system, system->video.gfxQue);
   //finally draw the screen
   if(!system->settings.passive){
-    BAG_Display_DrawObjFast(system->video.screen[scrn], *screen_addr[scrn], system->settings.x, system->settings.y);
+    //BAG_Display_DrawObjFast(system->video.screen[scrn], *screen_addr[scrn], system->settings.x, system->settings.y);
   }
 
   //if script is running in passive mode, user can't force system features
-  if(!system->settings.passive)
-  	   ds2_flipScreen(2 - scrn, system->settings.flipMode);
+  //if(!system->settings.passive)
+  //	   ds2_flipScreen(2 - scrn, system->settings.flipMode);
 
   return;
 }
@@ -962,8 +985,8 @@ static void _drawAll(ASMSys *system, videoQueue *qSys){
 
 static void _vsync(ASMSys *system){
   //if script running in passive mode, user can't force a vsync
-  if(!system->settings.passive)
-  	   BAG_Update();
+  //if(!system->settings.passive)
+  //	   BAG_Update();
 
   return;
 }
@@ -1070,11 +1093,11 @@ static void ASM_initVidOps(ASMSys *system){
 }
 
 int ASM_videoInit(ASMSys *system){
-  if(!system->settings.screenWidth)
+  /*if(!system->settings.screenWidth)
     system->settings.screenWidth = SCREEN_WIDTH;
 
   if(!system->settings.screenHeight)
-    system->settings.screenHeight = SCREEN_HEIGHT;
+    system->settings.screenHeight = SCREEN_HEIGHT;*/
 
   ASM_initVidOps(system);
 
@@ -1085,8 +1108,8 @@ int ASM_videoInit(ASMSys *system){
     system->video.screen[i] = NULL;
 
   //assign default output devices
-  system->video.outScreen[0] = (void *)&down_screen_addr;
-  system->video.outScreen[1] = (void *)&up_screen_addr;
+  //system->video.outScreen[0] = (void *)&down_screen_addr;
+  //system->video.outScreen[1] = (void *)&up_screen_addr;
 
   //if program not running as a script, it needs to make its own screens
   if(!system->settings.passive){

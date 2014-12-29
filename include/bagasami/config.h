@@ -44,6 +44,7 @@ extern "C" {
 #include <stdarg.h>
 #include <3ds.h>
 #include "filepath.h"
+#include "gfx.h"
 
 
 #define SET_FLAG(Var, Flag) (Var|=Flag)
@@ -55,7 +56,7 @@ extern "C" {
 #define USE_SCRIPT_STACK
 
 #define BASM_NO_FORCED_EXIT
-//#define BASM_COMPILE_VIDEO
+#define BASM_COMPILE_VIDEO
 //#define BASM_COMPILE_ADVANCED_VIDEO
 //#define BASM_COMPILE_FAT
 #define BASM_COMPILE_INPUT
@@ -83,6 +84,14 @@ extern "C" {
   void *gfxQue;
 
 */
+
+#define VIDEO_STRUCT \
+  void *gfxQue; \
+  void **outScreen[2];\
+  GfxObj_t *screen[2]; \
+  GfxObj_t *sprite[BASM_MAX_SPRITES];
+
+
 #define EXTLIBS_DATA \
     char ____nothing;
 //  INIObj_t iniFile;

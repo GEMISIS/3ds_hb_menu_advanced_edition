@@ -33,3 +33,5 @@ extern void GfxObj_RenderAlpha(GfxObj_t *dest, GfxObj_t *gfx, s16 x, s16 y);
 extern void GfxObj_Fill(GfxObj_t *gfx, u8 rgbColor[3]);
 extern void GfxObj_DrawPix(GfxObj_t *gfx, s16 x, s16 y, u8 rgbColor[3]);
 extern void GfxObj_Draw(gfxScreen_t screen, gfx3dSide_t side, GfxObj_t *gfx, s16 x, s16 y);
+extern u8 GfxObj_CreateBlank(GfxObj_t *gfx, s16 width, s16 height);
+extern void GfxObj_Delete(GfxObj_t *gfx);
