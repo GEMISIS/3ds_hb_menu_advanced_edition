@@ -4,6 +4,14 @@
 
 typedef float (*gfxWaveCallback)(void* p, u16 x);
 
+typedef GfxObj_s {
+	u8 *buffer;
+	u16 width, height;
+
+} GfxObj_t;
+
+
+
 //rendering stuff
 void gfxFadeScreen(gfxScreen_t screen, gfx3dSide_t side, u32 f);
 void gfxDrawSprite(gfxScreen_t screen, gfx3dSide_t side, u8* spriteData, u16 width, u16 height, s16 x, s16 y);

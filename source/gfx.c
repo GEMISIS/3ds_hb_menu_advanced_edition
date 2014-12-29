@@ -57,6 +57,12 @@ void gfxDrawSprite(gfxScreen_t screen, gfx3dSide_t side, u8* spriteData, u16 wid
 	}
 }
 
+
+void GfxObj_DrawSprite(gfxScreen_t screen, gfx3dSide_t side, GfxObj_t *gfx, s16 x, s16 y) {
+	gfxDrawSprite(screen, side, gfx->buffer, gfx->width, gfx->ht, x, y);
+}
+
+
 void gfxDrawDualSprite(u8* spriteData, u16 width, u16 height, s16 x, s16 y)
 {
 	if(!spriteData)return;
@@ -64,6 +70,12 @@ void gfxDrawDualSprite(u8* spriteData, u16 width, u16 height, s16 x, s16 y)
 	gfxDrawSprite(GFX_TOP, GFX_LEFT, spriteData, width, height, x-240, y);
 	gfxDrawSprite(GFX_BOTTOM, GFX_LEFT, spriteData, width, height, x, y-40);
 }
+
+void GfxObj_DrawDualSprite(GfxObj_t *gfx, s16 x, s16 y) {
+	GfxObj_DrawSprite(GFX_TOP, GFX_LEFT, gfx, x, y);
+	GfxObj_DrawSprite(GFX_BOTTOM, GFX_LEFT, gfx, x, y);
+}
+
 
 void gfxDrawSpriteAlpha(gfxScreen_t screen, gfx3dSide_t side, u8* spriteData, u16 width, u16 height, s16 x, s16 y)
 {
