@@ -9,7 +9,6 @@
 #include "statusbar.h"
 #include "filesystem.h"
 #include "error.h"
-#include "hb.h"
 #include "netloader.h"
 
 //extern unsigned time(time_t *);
@@ -189,7 +188,7 @@ int main()
 	irrstInit(NULL);
 	acInit();
 	ptmInit();
-	initHb();
+	hbInit();
 	netloader_init();
 
 	initBackground();
@@ -298,7 +297,7 @@ int main()
 
 	// cleanup whatever we have to cleanup
 	netloader_exit();
-	exitHb();
+	hbExit();
 	ptmExit();
 	acExit();
 	irrstExit();
