@@ -28,9 +28,9 @@ include $(DEVKITARM)/3ds_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	$(notdir $(CURDIR))
 BUILD		:=	build
-SOURCES		:=	source source/png source/bagasami source/bagasami/core source/graphics source/fileIO source/network
+SOURCES		:=	source source/png source/bagasami source/bagasami/core source/graphics source/fileIO source/network source/states
 DATA		:=	data data/default_theme
-INCLUDES	:=	include include/png include/bagasami include/bagasami/core include/graphics include/fileIO include/network
+INCLUDES	:=	include include/png include/bagasami include/bagasami/core include/graphics include/fileIO include/network include/states
 NO_SMDH		:=	1
 
 #---------------------------------------------------------------------------------
