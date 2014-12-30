@@ -384,15 +384,20 @@ void ASM_freeVideo(ASMSys *system){
 }
 
 
+#define RGB8_32(r, g, b) (((b) & 255) << 16 | (((g) & 255) << 8) | (((r) & 255)))
+#define RGB32_8(c, r, g, b) \
+  b = ((c) >> 16) & 255; \
+  g = ((c) >> 8) & 255;
+  r = ((c) & 255);
 
 /*======================================================================================
  BAGASMI NEW VIDEO API
     -Allows direct memory access to graphic objects and the screen :D
  ======================================================================================*/
 static void rgb(ASMSys *system){
-  /*  (*system->cpu.arg[0]) = RGB15((unsigned char)(*system->cpu.arg[1]),
-                                  (unsigned char)(*system->cpu.arg[2]),
-                                  (unsigned char)(*system->cpu.arg[3]));*/
+    (*system->cpu.arg[0]) = RGB8_32(*system->cpu.arg[1],
+                                  *system->cpu.arg[2],
+                                  *system->cpu.arg[3] );
     return;
 }
 
@@ -433,13 +438,8 @@ static void _gfxSetPix(ASMSys *system){
     x = (x >= wd) ? wd - 1 : x;
     y = (y >= ht) ? ht - 1 : y;
 
-
-
-    u8 *rgbColor = (u8*)system->cpu.arg[5];
     u32 pixel_index = 3 * (ht - y - 1 + x * ht);
-    dest[pixel_index] = rgbColor[2];      // blue
-    dest[pixel_index + 1] = rgbColor[1];  // green
-    dest[pixel_index + 2] = rgbColor[0];  // red
+    RGB32_8(*system->cpu.arg[5], dest[pixel_index + 2], dest[pixel_index + 1], dest[pixel_index]);
     return;
 }
 
@@ -448,7 +448,7 @@ static void _gfxSetPixRGB(ASMSys *system) {
     green   = (int)*system->cpu.arg[6],
     blue    = (int)*system->cpu.arg[7];
 
-    *system->cpu.arg[5] = (u32)(red | green<<8 | blue << 16);
+    *system->cpu.arg[5] = RGB8_32(red, green, blue);
     _gfxSetPix(system);
     return;
 }
